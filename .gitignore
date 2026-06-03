@@ -1,0 +1,23 @@
+# Generated model artifacts
+artifacts/
+
+# C++ build
+build/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+
+# UV
+.python-version
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
