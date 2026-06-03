@@ -12,6 +12,7 @@ add_executable(basic_engine
     src/basic_engine/resnet18_engine.cpp
     src/basic_engine/conv_plan.cpp
     src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_avx2.cpp
 )
 
 target_include_directories(basic_engine PRIVATE
@@ -24,4 +25,6 @@ target_compile_options(basic_engine PRIVATE
     -Wall
     -Wextra
     -Wpedantic
+    -mavx2
+    -mfma
 )

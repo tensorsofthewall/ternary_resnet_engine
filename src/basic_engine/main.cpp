@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
 
     const LatencyStats stats = compute_latency_stats(times_ms);
 
-    std::cout << "C++ scalar latency\n";
+    std::cout << "C++ engine latency\n";
     std::cout << "  runs:      " << timed_runs << "\n";
     std::cout << "  min_ms:    " << stats.min_ms << "\n";
     std::cout << "  median_ms: " << stats.median_ms << "\n";
@@ -122,10 +122,30 @@ int main(int argc, char** argv) {
 
     double total_profiled_ms = 0.0;
 
-    std::cout << "\nC++ scalar per-block profile\n";
+    std::cout << "\nC++ engine per-block profile\n";
     for (const TimingEntry& entry : timings) {
         total_profiled_ms += entry.ms;
         std::cout << "  " << entry.name << ": " << entry.ms << " ms\n";
+    }
+
+    std::vector<TimingEntry> sorted_timings = timings;
+
+    std::sort(
+        sorted_timings.begin(),
+        sorted_timings.end(),
+        [](const TimingEntry& a, const TimingEntry& b) {
+            return a.ms > b.ms;
+        }
+    );
+
+    std::cout << "\nTop timed operations\n";
+    for (size_t i = 0; i < std::min<size_t>(10, sorted_timings.size()); ++i) {
+        std::cout
+            << "  "
+            << sorted_timings[i].name
+            << ": "
+            << sorted_timings[i].ms
+            << " ms\n";
     }
 
     std::cout << "  total_profiled_ms: " << total_profiled_ms << " ms\n";

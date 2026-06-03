@@ -38,6 +38,7 @@ def benchmark_ort(
     sess_options = ort.SessionOptions()
     sess_options.intra_op_num_threads = threads
     sess_options.inter_op_num_threads = 1
+    sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 
     session = ort.InferenceSession(
         str(model_path),
