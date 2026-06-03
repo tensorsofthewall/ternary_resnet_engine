@@ -270,6 +270,26 @@ def main() -> None:
         **{name: tensor.numpy() for name, tensor in activations.items()},
     )
 
+    x.detach().cpu().numpy().astype(np.float32).tofile(artifact_dir / "golden_input_fp32.bin")
+
+    logits.detach().cpu().numpy().astype(np.float32).tofile(artifact_dir / "golden_logits_fp32.bin")
+
+    tensor_metadata = {
+        "golden_input": {
+            "filename": "golden_input_f32.bin",
+            "dtype": "float32",
+            "shape": [1, 3, 224, 224],
+        },
+        "golden_logits": {
+            "filename": "golden_logits_f32.bin",
+            "dtype": "float32",
+            "shape": [1, 1000],
+        },
+    }
+
+    with (artifact_dir / "tensor_metadata.json").open("w") as f:
+        json.dump(tensor_metadata, f, indent=2)
+
     # Export ONNX
     onnx_path = artifact_dir / "resnet18_ternary_fp32.onnx"
 
@@ -286,7 +306,7 @@ def main() -> None:
     # Export custom binary v1
     export_custom_binary_v1(
         model,
-        artifact_dir / "model_int8_weights_v1.bin",
+        artifact_dir / "model_ternary_i8_weights_v1.bin",
     )
 
     # Export metadata
@@ -308,7 +328,7 @@ def main() -> None:
     print(f"  Golden input:      {artifact_dir / 'golden_input.npy'}")
     print(f"  Golden logits:     {artifact_dir / 'golden_logits.npy'}")
     print(f"  Golden activs:     {artifact_dir / 'golden_activations.npz'}")
-    print(f"  Custom binary v1:  {artifact_dir / 'model_int8_weights_v1.bin'}")
+    print(f"  Custom binary v1:  {artifact_dir / 'model_ternary_i8_weights_v1.bin'}")
     print(f"  Metadata:          {artifact_dir / 'model_metadata.json'}")
     print(f"  Logits shape:      {tuple(logits.shape)}")
     print(f"  Logits sample:     {logits[0, :5].tolist()}")
