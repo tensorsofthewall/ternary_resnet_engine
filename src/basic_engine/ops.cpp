@@ -189,3 +189,215 @@ Tensor linear(const Tensor& x, const LinearParams& fc) {
 
     return y;
 }
+
+// Padding sparse tensors
+Tensor pad_tensor(const Tensor& x, int pad_h, int pad_w) {
+    Tensor y(x.c, x.h + 2 * pad_h, x.w + 2 * pad_w);
+
+    for (int c = 0; c < x.c; ++c) {
+        for (int h = 0; h < x.h; ++h) {
+            const float* src = x.ptr(c,h,0);
+            float* dst = y.ptr(c,h+pad_h, pad_w);
+            std::copy(src, src + x.w, dst);
+        }
+    }
+
+    return y;
+}
+
+// Sparse scalar conv op
+Tensor conv2d_ternary_scalar_sparse(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan) {
+    const int out_h = (x.h + 2 * conv.pad_h - conv.kh) / conv.stride_h + 1;
+    const int out_w = (x.w + 2 * conv.pad_w - conv.kw) / conv.stride_w + 1;
+
+    Tensor y(conv.out_channels, out_h, out_w);
+
+    for (int oc = 0; oc < conv.out_channels; ++oc) {
+        const ConvOCPlan& oc_plan = plan.oc_plans[static_cast<size_t>(oc)];
+
+        for (int oh = 0; oh < out_h; ++oh) {
+            for (int ow = 0; ow < out_w; ++ow) {
+                float acc = 0.0f;
+
+                for (const WeightIndex& wi : oc_plan.pos) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky) - conv.pad_h;
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx) - conv.pad_w;
+
+                    if (ih >= 0 && ih < x.h && iw >= 0 && iw < x.w) {
+                        acc += x(static_cast<int>(wi.ic), ih, iw);
+                    }
+                }
+
+                for (const WeightIndex& wi : oc_plan.neg) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky) - conv.pad_h;
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx) - conv.pad_w;
+
+                    if (ih >= 0 && ih < x.h && iw >= 0 && iw < x.w) {
+                        acc -= x(static_cast<int>(wi.ic), ih, iw);
+                    }
+                }
+
+                if (conv.has_bias) {
+                    acc += conv.bias[static_cast<size_t>(oc)];
+                }
+
+                y(oc, oh, ow) = acc;
+            }
+        }
+    }
+
+    return y;   
+}
+
+// No-padding sparse conv op
+Tensor conv2d_ternary_sparse_nopad_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan) {
+    const int out_h = (x.h-conv.kh)/conv.stride_h+1;
+    const int out_w = (x.w-conv.kw)/conv.stride_w+1;
+
+    Tensor y(conv.out_channels, out_h, out_w);
+
+    for (int oc=0; oc < conv.out_channels; ++oc) {
+        const ConvOCPlan& oc_plan = plan.oc_plans[static_cast<size_t>(oc)];
+
+        for (int oh=0; oh < out_h; ++oh) {
+            for (int ow=0; ow < out_w; ++ow) {
+                float acc = 0.0f;
+
+                for (const WeightIndex& wi : oc_plan.pos) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
+
+                    acc += x(static_cast<int>(wi.ic), ih, iw);
+                }
+
+                for (const WeightIndex& wi : oc_plan.neg) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
+
+                    acc -= x(static_cast<int>(wi.ic), ih, iw);
+                }
+
+                if (conv.has_bias) {
+                    acc += conv.bias[static_cast<size_t>(oc)];
+                }
+
+                y(oc, oh, ow) = acc;
+            }
+        }
+    }
+
+    return y;
+}
+
+// Padded sparse conv op
+Tensor conv2d_ternary_sparse_padded_scalar(
+    const Tensor& x,
+    const Conv2DParams& conv,
+    const ConvPlan& plan
+) {
+    if (conv.pad_h == 0 && conv.pad_w == 0) {
+        return conv2d_ternary_sparse_nopad_scalar(x, conv, plan);
+    }
+
+    const Tensor xpad = pad_tensor(x, conv.pad_h, conv.pad_w);
+
+    const int out_h = (x.h + 2 * conv.pad_h - conv.kh) / conv.stride_h + 1;
+    const int out_w = (x.w + 2 * conv.pad_w - conv.kw) / conv.stride_w + 1;
+
+    Tensor y(conv.out_channels, out_h, out_w);
+
+    for (int oc = 0; oc < conv.out_channels; ++oc) {
+        const ConvOCPlan& oc_plan = plan.oc_plans[static_cast<size_t>(oc)];
+
+        for (int oh = 0; oh < out_h; ++oh) {
+            for (int ow = 0; ow < out_w; ++ow) {
+                float acc = 0.0f;
+
+                for (const WeightIndex& wi : oc_plan.pos) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
+
+                    acc += xpad(static_cast<int>(wi.ic), ih, iw);
+                }
+
+                for (const WeightIndex& wi : oc_plan.neg) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
+
+                    acc -= xpad(static_cast<int>(wi.ic), ih, iw);
+                }
+
+                if (conv.has_bias) {
+                    acc += conv.bias[static_cast<size_t>(oc)];
+                }
+
+                y(oc, oh, ow) = acc;
+            }
+        }
+    }
+
+    return y;
+}
+
+// Fused Padded Sparse Conv2D+BatchNorm implementation
+// Helper for fused op with ReLU flag
+Tensor conv2d_ternary_sparse_padded_bn_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu) {
+    Tensor xpad;
+    const Tensor* input_ptr = &x;
+
+    if (conv.pad_h > 0 || conv.pad_w > 0) {
+        xpad = pad_tensor(x, conv.pad_h, conv.pad_w);
+        input_ptr = &xpad;
+    }
+
+    const Tensor& xin  = *input_ptr;
+    const int out_h = (x.h + 2 * conv.pad_h - conv.kh) / conv.stride_h + 1;
+    const int out_w = (x.w + 2 * conv.pad_w - conv.kw) / conv.stride_w + 1;
+
+    Tensor y(conv.out_channels, out_h, out_w);
+
+    for (int oc=0; oc < conv.out_channels; ++oc) {
+        const ConvOCPlan& oc_plan = plan.oc_plans[static_cast<size_t>(oc)];
+        const float bn_scale = bn.scale[static_cast<size_t>(oc)];
+        const float bn_bias = bn.bias[static_cast<size_t>(oc)];
+        for (int oh = 0; oh < out_h; ++oh) {
+            for (int ow = 0; ow < out_w; ++ow) {
+                float acc = 0.0f;
+                for (const WeightIndex& wi : oc_plan.pos) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
+
+                    acc += xin(static_cast<int>(wi.ic), ih, iw);
+                }
+
+                for (const WeightIndex& wi : oc_plan.neg) {
+                    const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
+                    const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
+
+                    acc -= xin(static_cast<int>(wi.ic), ih, iw);
+                }
+
+                if (conv.has_bias) {
+                    acc += conv.bias[static_cast<size_t>(oc)];
+                }
+
+                acc = acc*bn_scale + bn_bias;
+
+                if (apply_relu && acc < 0.0f) {
+                    acc = 0.0f;
+                }
+                y(oc, oh, ow) = acc;
+            }
+        }
+    }
+    return y;
+}
+
+// Wrapper for Fused Sparse Conv2D+BatchNorm and Fused Sparse Conv2D+BatchNorm+ReLU
+Tensor conv2d_ternary_sparse_padded_bn_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn) {
+    return conv2d_ternary_sparse_padded_bn_impl(x, conv, plan, bn, false);
+}
+
+Tensor conv2d_ternary_sparse_padded_bn_relu_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn) {
+    return conv2d_ternary_sparse_padded_bn_impl(x, conv, plan, bn, true);
+}

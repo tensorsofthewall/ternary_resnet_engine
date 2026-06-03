@@ -10,6 +10,8 @@ add_executable(basic_engine
     src/basic_engine/model_loader.cpp
     src/basic_engine/ops.cpp
     src/basic_engine/resnet18_engine.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
 )
 
 target_include_directories(basic_engine PRIVATE

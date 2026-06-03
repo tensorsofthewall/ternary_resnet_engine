@@ -117,6 +117,19 @@ int main(int argc, char** argv) {
     std::cout << "  mean_ms:   " << stats.mean_ms << "\n";
     std::cout << "  p90_ms:    " << stats.p90_ms << "\n";
 
+    std::vector<TimingEntry> timings;
+    Tensor profiled_output = forward_resnet18_scalar_timed(model, input, timings);
+
+    double total_profiled_ms = 0.0;
+
+    std::cout << "\nC++ scalar per-block profile\n";
+    for (const TimingEntry& entry : timings) {
+        total_profiled_ms += entry.ms;
+        std::cout << "  " << entry.name << ": " << entry.ms << " ms\n";
+    }
+
+    std::cout << "  total_profiled_ms: " << total_profiled_ms << " ms\n";
+
     const std::vector<float> golden = read_f32_file(logits_path, 1000);
 
     float max_abs = 0.0f;
