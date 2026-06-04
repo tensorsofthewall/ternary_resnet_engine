@@ -64,8 +64,8 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
     const Conv2DParams& conv = m.convs.at(conv_name);
     const ConvPlan& plan = m.conv_plans.at(conv_name);
     const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
-    if (can_use_avx2_stride1(conv)) {
-        return conv2d_ternary_sparse_padded_bn_relu_avx2_stride1(x, conv, plan, bn_fused);
+    if (can_use_avx2_width_kernel(conv)) {
+        return conv2d_ternary_sparse_padded_bn_relu_avx2_width(x, conv, plan, bn_fused);
     }
     return conv2d_ternary_sparse_padded_bn_relu_scalar(x, conv, plan, bn_fused);
 }
@@ -74,8 +74,8 @@ Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, co
     const Conv2DParams& conv = m.convs.at(conv_name);
     const ConvPlan& plan = m.conv_plans.at(conv_name);
     const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
-    if (can_use_avx2_stride1(conv)) {
-        return conv2d_ternary_sparse_padded_bn_avx2_stride1(x, conv, plan, bn_fused);
+    if (can_use_avx2_width_kernel(conv)) {
+        return conv2d_ternary_sparse_padded_bn_avx2_width(x, conv, plan, bn_fused);
     }
     return conv2d_ternary_sparse_padded_bn_scalar(x, conv, plan, bn_fused);
 }
