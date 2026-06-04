@@ -118,7 +118,7 @@ struct SparseOCBlock4ConvPlan {
     std::vector<OCBlock4Plan> oc_blocks;
 };
 
-// Sparse OC-Block2 sign-pattern definitions
+// Sparse OC-Block2 sign-pattern grouping definitions
 struct OCBlock2Action {
     uint16_t ic = 0;
     uint8_t ky = 0;
@@ -154,11 +154,50 @@ struct PatternOCBlock2ConvPlan {
     std::vector<OCBlock2PatternPlan> oc_blocks;
 };
 
+// Sparse OC-Block4 sign-pattern grouping definitions
+struct OCBlock4PatternAction {
+    uint16_t ic = 0;
+    uint8_t ky = 0;
+    uint8_t kx = 0;
+};
+
+struct OCBlock4PatternBucket {
+    int pattern_id = 0;
+
+    int8_t w0 = 0;
+    int8_t w1 = 0;
+    int8_t w2 = 0;
+    int8_t w3 = 0;
+
+    std::vector<OCBlock4PatternAction> actions;
+};
+
+struct OCBlock4PatternPlan {
+    int oc_start = 0;
+    std::vector<OCBlock4PatternBucket> buckets;
+};
+
+struct PatternOCBlock4ConvPlan {
+    std::string name;
+
+    int in_channels = 0;
+    int out_channels = 0;
+    int kh = 0;
+    int kw = 0;
+    int stride_h = 0;
+    int stride_w = 0;
+    int pad_h = 0;
+    int pad_w = 0;
+
+    std::vector<OCBlock4PatternPlan> oc_blocks;
+};
+
 struct Model {
     std::unordered_map<std::string, Conv2DParams> convs;
     std::unordered_map<std::string, ConvPlan> conv_plans;
     std::unordered_map<std::string, SparseOCBlock4ConvPlan> sparse_ocblock4_plans;
     std::unordered_map<std::string, PatternOCBlock2ConvPlan> pattern_ocblock2_plans;
+    std::unordered_map<std::string, PatternOCBlock4ConvPlan> pattern_ocblock4_plans;
     
     std::unordered_map<std::string, BatchNormParams> bns;
     std::unordered_map<std::string, BNFusedParams> fused_bns;
