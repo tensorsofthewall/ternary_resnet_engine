@@ -15,6 +15,8 @@ add_executable(basic_engine
     src/basic_engine/conv_avx2.cpp
     src/basic_engine/sparse_ocblock_plan.cpp
     src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock2_avx2.cpp
 )
 
 target_include_directories(basic_engine PRIVATE

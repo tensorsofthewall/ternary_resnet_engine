@@ -4,6 +4,7 @@
 #include "conv_avx2.hpp"
 #include "timing.hpp"
 #include "conv3x3_sparse_ocblock_avx2.hpp"
+#include "conv3x3_pattern_ocblock2_avx2.hpp"
 
 namespace {
 
@@ -66,9 +67,23 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
     const ConvPlan& plan = m.conv_plans.at(conv_name);
     const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
     constexpr bool enable_ocblock_kernel = false;
+    constexpr bool enable_pattern_ocblock2_kernel = true;
     if (enable_ocblock_kernel && can_use_sparse_ocblock4_3x3s1_avx2(conv)) {
         const SparseOCBlock4ConvPlan& ocblock_plan = m.sparse_ocblock4_plans.at(conv_name);
         return conv3x3s1_sparse_ocblock4_bn_relu_avx2(x, conv, ocblock_plan, bn_fused, workspace);
+    }
+    if (enable_pattern_ocblock2_kernel &&
+        can_use_pattern_ocblock2_3x3s1_avx2(conv)) {
+        const PatternOCBlock2ConvPlan& pattern_plan =
+            m.pattern_ocblock2_plans.at(conv_name);
+
+        return conv3x3s1_pattern_ocblock2_bn_relu_avx2(
+            x,
+            conv,
+            pattern_plan,
+            bn_fused,
+            workspace
+        );
     }
 
     if (can_use_avx2_width_kernel(conv)) {
@@ -83,9 +98,24 @@ Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, co
     const ConvPlan& plan = m.conv_plans.at(conv_name);
     const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
     constexpr bool enable_ocblock_kernel = false;
+    constexpr bool enable_pattern_ocblock2_kernel = true;
     if (enable_ocblock_kernel && can_use_sparse_ocblock4_3x3s1_avx2(conv)) {
         const SparseOCBlock4ConvPlan& ocblock_plan = m.sparse_ocblock4_plans.at(conv_name);
         return conv3x3s1_sparse_ocblock4_bn_avx2(x, conv, ocblock_plan, bn_fused, workspace);
+    }
+
+    if (enable_pattern_ocblock2_kernel &&
+        can_use_pattern_ocblock2_3x3s1_avx2(conv)) {
+        const PatternOCBlock2ConvPlan& pattern_plan =
+            m.pattern_ocblock2_plans.at(conv_name);
+
+        return conv3x3s1_pattern_ocblock2_bn_avx2(
+            x,
+            conv,
+            pattern_plan,
+            bn_fused,
+            workspace
+        );
     }
 
     if (can_use_avx2_width_kernel(conv)) {
