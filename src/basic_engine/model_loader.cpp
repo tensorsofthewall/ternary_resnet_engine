@@ -1,6 +1,7 @@
 #include "model_loader.hpp"
 #include "conv_plan.hpp"
 #include "bn_fusion.hpp"
+#include "sparse_ocblock_plan.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -162,6 +163,7 @@ Model load_model(const std::filesystem::path& path) {
     }
 
     build_conv_plans(model);
+    build_sparse_ocblock4_conv_plans(model);
     build_fused_bns(model);
     return model;
 }

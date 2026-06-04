@@ -13,6 +13,7 @@
 #include "model_loader.hpp"
 #include "resnet18_engine.hpp"
 #include "tensor.hpp"
+#include "workspace.hpp"
 
 
 struct LatencyStats {
@@ -75,20 +76,22 @@ int main(int argc, char** argv) {
     Tensor input(3, 224, 224);
     input.data = read_f32_file(input_path, 3 * 224 * 224);
 
-    constexpr int warmup_runs = 2;
-    constexpr int timed_runs = 5;
+    constexpr int warmup_runs = 20;
+    constexpr int timed_runs = 100;
 
-    std::cout << "Running scalar warmup...\n";
+    EngineWorkspace workspace;
+
+    std::cout << "Running engine warmup...\n";
 
     for (int i = 0; i < warmup_runs; ++i) {
-        Tensor warmup_output = forward_resnet18_scalar(model, input);
+        Tensor warmup_output = forward_resnet18_scalar(model, input, workspace);
 
         if (warmup_output.data.empty()) {
             throw std::runtime_error("Warmup output is empty");
         }
     }
 
-    std::cout << "Benchmarking scalar engine...\n";
+    std::cout << "Benchmarking C++ ternary engine...\n";
 
     std::vector<double> times_ms;
     times_ms.reserve(timed_runs);
@@ -98,7 +101,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < timed_runs; ++i) {
         const auto start = std::chrono::high_resolution_clock::now();
 
-        output = forward_resnet18_scalar(model, input);
+        output = forward_resnet18_scalar(model, input, workspace);
 
         const auto end = std::chrono::high_resolution_clock::now();
 
@@ -118,7 +121,7 @@ int main(int argc, char** argv) {
     std::cout << "  p90_ms:    " << stats.p90_ms << "\n";
 
     std::vector<TimingEntry> timings;
-    Tensor profiled_output = forward_resnet18_scalar_timed(model, input, timings);
+    Tensor profiled_output = forward_resnet18_scalar_timed(model, input, workspace, timings);
 
     double total_profiled_ms = 0.0;
 
@@ -152,25 +155,36 @@ int main(int argc, char** argv) {
 
     const std::vector<float> golden = read_f32_file(logits_path, 1000);
 
+    const Tensor& validation_output = profiled_output;
+
     float max_abs = 0.0f;
     double mean_abs = 0.0;
 
     for (int i = 0; i < 1000; ++i) {
-        const float err = std::abs(output.data[static_cast<size_t>(i)] - golden[static_cast<size_t>(i)]);
+        const size_t idx = static_cast<size_t>(i);
+
+        const float err = std::abs(
+            validation_output.data[idx] - golden[idx]
+        );
+
         max_abs = std::max(max_abs, err);
         mean_abs += static_cast<double>(err);
     }
 
     mean_abs /= 1000.0;
 
-    std::cout << "C++ scalar vs PyTorch golden\n";
+    std::cout << "C++ engine vs PyTorch golden\n";
     std::cout << "  max_abs_error:  " << max_abs << "\n";
     std::cout << "  mean_abs_error: " << mean_abs << "\n";
 
     std::cout << "Sample logits:\n";
     for (int i = 0; i < 5; ++i) {
-        std::cout << "  y[" << i << "] cpp=" << output.data[static_cast<size_t>(i)]
-                  << " golden=" << golden[static_cast<size_t>(i)] << "\n";
+        const size_t idx = static_cast<size_t>(i);
+
+        std::cout
+            << "  y[" << i << "] cpp=" << validation_output.data[idx]
+            << " golden=" << golden[idx]
+            << "\n";
     }
 
     return 0;

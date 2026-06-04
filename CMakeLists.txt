@@ -13,11 +13,15 @@ add_executable(basic_engine
     src/basic_engine/conv_plan.cpp
     src/basic_engine/bn_fusion.cpp
     src/basic_engine/conv_avx2.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
 )
 
 target_include_directories(basic_engine PRIVATE
     src/basic_engine
 )
+
+target_compile_definitions(basic_engine PRIVATE NDEBUG)
 
 target_compile_options(basic_engine PRIVATE
     -O3

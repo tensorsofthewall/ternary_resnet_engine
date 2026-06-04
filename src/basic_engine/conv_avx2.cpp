@@ -37,18 +37,24 @@ namespace {
         throw std::runtime_error("Unsupported stride_w in load_width_8: " + std::to_string(stride_w));
     }
 
-    Tensor conv2d_ternary_sparse_padded_bn_avx2_width_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu) {
+    Tensor conv2d_ternary_sparse_padded_bn_avx2_width_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu, EngineWorkspace& workspace) {
         if (!can_use_avx2_width_kernel(conv)) {
             throw std::runtime_error("AVX2 width-kernel conv called on unsupported layer: " + conv.name);
         }
-        Tensor xpad;
+        // Tensor xpad;
+        // const Tensor* input_ptr = &x;
+
+        // if (conv.pad_h != 0 || conv.pad_w != 0) {
+        //     xpad = pad_tensor(x, conv.pad_h, conv.pad_w);
+        //     input_ptr = &xpad;
+        // }
+
         const Tensor* input_ptr = &x;
-
         if (conv.pad_h != 0 || conv.pad_w != 0) {
-            xpad = pad_tensor(x, conv.pad_h, conv.pad_w);
-            input_ptr = &xpad;
+            pad_tensor_into(x, conv.pad_h, conv.pad_w, workspace.pad_buffer);
+            input_ptr = &workspace.pad_buffer;
         }
-
+        
         const Tensor& xin = *input_ptr;
         const int out_h = (x.h + 2 * conv.pad_h - conv.kh)/conv.stride_h + 1;
         const int out_w = (x.w + 2 * conv.pad_w - conv.kw)/conv.stride_w + 1;
@@ -66,20 +72,26 @@ namespace {
             const __m256 bias_v = _mm256_set1_ps(bias);
 
             for (int oh=0; oh < out_h; ++oh) {
+                const int oh_base = oh * conv.stride_h;
                 int ow = 0;
                 for (; ow + 7 < out_w; ow += 8) {
+                    const int ow_base = ow * conv.stride_w;
                     __m256 acc = _mm256_setzero_ps();
                     for (const WeightIndex& wi : oc_plan.pos) {
-                        const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
-                        const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
-                        const float* p = xin.ptr(static_cast<int>(wi.ic), ih, iw);
+                        const int ih = oh_base + static_cast<int>(wi.ky);
+                        const int iw = ow_base + static_cast<int>(wi.kx);
+                        // const float* p = xin.ptr(static_cast<int>(wi.ic), ih, iw);
+                        const int base = (static_cast<int>(wi.ic) * xin.h + ih) * xin.w + iw;
+                        const float* p = xin.data.data() + static_cast<size_t>(base);
                         const __m256 xv = load_width_8(p, conv.stride_w);
                         acc = _mm256_add_ps(acc, xv);
                     }
                     for (const WeightIndex& wi: oc_plan.neg) {
-                        const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
-                        const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
-                        const float* p = xin.ptr(static_cast<int>(wi.ic), ih, iw);
+                        const int ih = oh_base + static_cast<int>(wi.ky);
+                        const int iw = ow_base + static_cast<int>(wi.kx);
+                        // const float* p = xin.ptr(static_cast<int>(wi.ic), ih, iw);
+                        const int base = (static_cast<int>(wi.ic) * xin.h + ih) * xin.w + iw;
+                        const float* p = xin.data.data() + static_cast<size_t>(base);
                         const __m256 xv = load_width_8(p, conv.stride_w);
                         acc = _mm256_sub_ps(acc, xv);
                     }
@@ -94,12 +106,16 @@ namespace {
                     for (const WeightIndex& wi : oc_plan.pos) {
                         const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
                         const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
-                        acc += xin(static_cast<int>(wi.ic), ih, iw);
+                        // acc += xin(static_cast<int>(wi.ic), ih, iw);
+                        const int idx = (static_cast<int>(wi.ic) * xin.h + ih) *xin.w + iw;
+                        acc += xin.data[static_cast<size_t>(idx)];
                     }
                     for (const WeightIndex& wi : oc_plan.neg) {
                         const int ih = oh * conv.stride_h + static_cast<int>(wi.ky);
                         const int iw = ow * conv.stride_w + static_cast<int>(wi.kx);
-                        acc -= xin(static_cast<int>(wi.ic), ih, iw);
+                        // acc -= xin(static_cast<int>(wi.ic), ih, iw);
+                        const int idx = (static_cast<int>(wi.ic) * xin.h + ih) *xin.w + iw;
+                        acc -= xin.data[static_cast<size_t>(idx)];
                     }
                     acc = acc*scale + bias;
                     if (apply_relu && acc < 0.0f) {
@@ -113,10 +129,10 @@ namespace {
     }
 }
 
-Tensor conv2d_ternary_sparse_padded_bn_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn) {
-    return conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,false);
+Tensor conv2d_ternary_sparse_padded_bn_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace) {
+    return conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,false,workspace);
 }
 
-Tensor conv2d_ternary_sparse_padded_bn_relu_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn) {
-    return conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,true);
+Tensor conv2d_ternary_sparse_padded_bn_relu_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace) {
+    return conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,true,workspace);
 }

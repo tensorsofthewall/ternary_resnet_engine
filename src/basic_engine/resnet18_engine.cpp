@@ -3,6 +3,7 @@
 #include "ops.hpp"
 #include "conv_avx2.hpp"
 #include "timing.hpp"
+#include "conv3x3_sparse_ocblock_avx2.hpp"
 
 namespace {
 
@@ -60,22 +61,35 @@ namespace {
 // }
 
 // AVX2-Optimized Fused Sparse Padded versions
-Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name) {
+Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, EngineWorkspace& workspace) {
     const Conv2DParams& conv = m.convs.at(conv_name);
     const ConvPlan& plan = m.conv_plans.at(conv_name);
     const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
-    if (can_use_avx2_width_kernel(conv)) {
-        return conv2d_ternary_sparse_padded_bn_relu_avx2_width(x, conv, plan, bn_fused);
+    constexpr bool enable_ocblock_kernel = false;
+    if (enable_ocblock_kernel && can_use_sparse_ocblock4_3x3s1_avx2(conv)) {
+        const SparseOCBlock4ConvPlan& ocblock_plan = m.sparse_ocblock4_plans.at(conv_name);
+        return conv3x3s1_sparse_ocblock4_bn_relu_avx2(x, conv, ocblock_plan, bn_fused, workspace);
     }
+
+    if (can_use_avx2_width_kernel(conv)) {
+        return conv2d_ternary_sparse_padded_bn_relu_avx2_width(x, conv, plan, bn_fused, workspace);
+    }
+
     return conv2d_ternary_sparse_padded_bn_relu_scalar(x, conv, plan, bn_fused);
 }
 
-Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name) {
+Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, EngineWorkspace& workspace) {
     const Conv2DParams& conv = m.convs.at(conv_name);
     const ConvPlan& plan = m.conv_plans.at(conv_name);
     const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
+    constexpr bool enable_ocblock_kernel = false;
+    if (enable_ocblock_kernel && can_use_sparse_ocblock4_3x3s1_avx2(conv)) {
+        const SparseOCBlock4ConvPlan& ocblock_plan = m.sparse_ocblock4_plans.at(conv_name);
+        return conv3x3s1_sparse_ocblock4_bn_avx2(x, conv, ocblock_plan, bn_fused, workspace);
+    }
+
     if (can_use_avx2_width_kernel(conv)) {
-        return conv2d_ternary_sparse_padded_bn_avx2_width(x, conv, plan, bn_fused);
+        return conv2d_ternary_sparse_padded_bn_avx2_width(x, conv, plan, bn_fused, workspace);
     }
     return conv2d_ternary_sparse_padded_bn_scalar(x, conv, plan, bn_fused);
 }
@@ -84,7 +98,8 @@ Tensor basic_block(
     const Model& m,
     const Tensor& x,
     const char* prefix,
-    bool has_downsample
+    bool has_downsample,
+    EngineWorkspace& workspace
 ) {
     const std::string p(prefix);
 
@@ -94,14 +109,16 @@ Tensor basic_block(
         m,
         x,
         (p + ".conv1").c_str(),
-        (p + ".bn1").c_str()
+        (p + ".bn1").c_str(),
+        workspace
     );
 
     y = conv_bn(
         m,
         y,
         (p + ".conv2").c_str(),
-        (p + ".bn2").c_str()
+        (p + ".bn2").c_str(),
+        workspace
     );
 
     if (has_downsample) {
@@ -109,7 +126,8 @@ Tensor basic_block(
             m,
             x,
             (p + ".downsample.0").c_str(),
-            (p + ".downsample.1").c_str()
+            (p + ".downsample.1").c_str(),
+            workspace
         );
     }
 
@@ -120,14 +138,14 @@ Tensor basic_block(
 }
 
 // Timed versions of blocks for profiling
-Tensor conv_bn_relu_timed(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, std::vector<TimingEntry>& timings) {
+Tensor conv_bn_relu_timed(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, EngineWorkspace& workspace, std::vector<TimingEntry>& timings) {
     return timed_op(timings, conv_name + "+" + bn_name + "+relu", [&]() {
-        return conv_bn_relu(m, x, conv_name, bn_name);
+        return conv_bn_relu(m, x, conv_name, bn_name, workspace);
     });
 }
-Tensor conv_bn_timed(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, std::vector<TimingEntry>& timings) {
+Tensor conv_bn_timed(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, EngineWorkspace& workspace, std::vector<TimingEntry>& timings) {
     return timed_op(timings, conv_name + "+" + bn_name, [&]() {
-        return conv_bn(m, x, conv_name, bn_name);
+        return conv_bn(m, x, conv_name, bn_name, workspace);
     });
 }
 Tensor add_relu_timed(const Tensor& a, const Tensor& b, const std::string& name, std::vector<TimingEntry>& timings) {
@@ -137,15 +155,15 @@ Tensor add_relu_timed(const Tensor& a, const Tensor& b, const std::string& name,
         return y;
     });
 }
-Tensor basic_block_timed(const Model& m, const Tensor& x, const std::string& prefix, bool has_downsample, std::vector<TimingEntry>& timings) {
+Tensor basic_block_timed(const Model& m, const Tensor& x, const std::string& prefix, bool has_downsample, EngineWorkspace& workspace, std::vector<TimingEntry>& timings) {
     Tensor identity = x;
 
-    Tensor y = conv_bn_relu_timed(m,x,(prefix + ".conv1").c_str(),(prefix + ".bn1").c_str(),timings);
+    Tensor y = conv_bn_relu_timed(m,x,(prefix + ".conv1").c_str(),(prefix + ".bn1").c_str(),workspace,timings);
 
-    y = conv_bn_timed(m,y,(prefix + ".conv2").c_str(),(prefix + ".bn2").c_str(),timings);
+    y = conv_bn_timed(m,y,(prefix + ".conv2").c_str(),(prefix + ".bn2").c_str(),workspace,timings);
 
     if (has_downsample) {
-        identity = conv_bn_timed(m,x,(prefix + ".downsample.0").c_str(),(prefix + ".downsample.1").c_str(),timings);
+        identity = conv_bn_timed(m,x,(prefix + ".downsample.0").c_str(),(prefix + ".downsample.1").c_str(),workspace,timings);
     }
 
     y = add_relu_timed(y, identity, prefix, timings);
@@ -154,21 +172,21 @@ Tensor basic_block_timed(const Model& m, const Tensor& x, const std::string& pre
 }
 } // namespace
 
-Tensor forward_resnet18_scalar(const Model& model, const Tensor& input) {
-    Tensor x = conv_bn_relu(model, input, "conv1", "bn1");
+Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWorkspace& workspace) {
+    Tensor x = conv_bn_relu(model, input, "conv1", "bn1", workspace);
     x = maxpool2d_3x3_s2_p1(x);
 
-    x = basic_block(model, x, "layer1.0", false);
-    x = basic_block(model, x, "layer1.1", false);
+    x = basic_block(model, x, "layer1.0", false, workspace);
+    x = basic_block(model, x, "layer1.1", false, workspace);
 
-    x = basic_block(model, x, "layer2.0", true);
-    x = basic_block(model, x, "layer2.1", false);
+    x = basic_block(model, x, "layer2.0", true, workspace);
+    x = basic_block(model, x, "layer2.1", false, workspace);
 
-    x = basic_block(model, x, "layer3.0", true);
-    x = basic_block(model, x, "layer3.1", false);
+    x = basic_block(model, x, "layer3.0", true, workspace);
+    x = basic_block(model, x, "layer3.1", false, workspace);
 
-    x = basic_block(model, x, "layer4.0", true);
-    x = basic_block(model, x, "layer4.1", false);
+    x = basic_block(model, x, "layer4.0", true, workspace);
+    x = basic_block(model, x, "layer4.1", false, workspace);
 
     x = adaptive_avgpool_1x1(x);
     x = linear(x, model.linears.at("fc"));
@@ -179,6 +197,7 @@ Tensor forward_resnet18_scalar(const Model& model, const Tensor& input) {
 Tensor forward_resnet18_scalar_timed(
     const Model& model,
     const Tensor& input,
+    EngineWorkspace& workspace,
     std::vector<TimingEntry>& timings
 ) {
     Tensor x = conv_bn_relu_timed(
@@ -186,6 +205,7 @@ Tensor forward_resnet18_scalar_timed(
         input,
         "conv1",
         "bn1",
+        workspace,
         timings
     );
 
@@ -193,17 +213,17 @@ Tensor forward_resnet18_scalar_timed(
         return maxpool2d_3x3_s2_p1(x);
     });
 
-    x = basic_block_timed(model, x, "layer1.0", false, timings);
-    x = basic_block_timed(model, x, "layer1.1", false, timings);
+    x = basic_block_timed(model, x, "layer1.0", false, workspace, timings);
+    x = basic_block_timed(model, x, "layer1.1", false, workspace, timings);
 
-    x = basic_block_timed(model, x, "layer2.0", true, timings);
-    x = basic_block_timed(model, x, "layer2.1", false, timings);
+    x = basic_block_timed(model, x, "layer2.0", true, workspace, timings);
+    x = basic_block_timed(model, x, "layer2.1", false, workspace, timings);
 
-    x = basic_block_timed(model, x, "layer3.0", true, timings);
-    x = basic_block_timed(model, x, "layer3.1", false, timings);
+    x = basic_block_timed(model, x, "layer3.0", true, workspace, timings);
+    x = basic_block_timed(model, x, "layer3.1", false, workspace, timings);
 
-    x = basic_block_timed(model, x, "layer4.0", true, timings);
-    x = basic_block_timed(model, x, "layer4.1", false, timings);
+    x = basic_block_timed(model, x, "layer4.0", true, workspace, timings);
+    x = basic_block_timed(model, x, "layer4.1", false, workspace, timings);
 
     x = timed_op(timings, "avgpool", [&]() {
         return adaptive_avgpool_1x1(x);

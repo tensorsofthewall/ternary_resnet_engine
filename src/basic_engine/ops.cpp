@@ -4,6 +4,24 @@
 #include <cmath>
 #include <stdexcept>
 
+// Function to reduce padding allocation overhead
+void pad_tensor_into(const Tensor& x, int pad_h, int pad_w, Tensor& y) {
+    const int padded_h = x.h + 2 * pad_h;
+    const int padded_w = x.w + 2 * pad_w;
+    if (y.c != x.c || y.h != padded_h || y.w != padded_w) {
+        y = Tensor(x.c, padded_h, padded_w);
+    } else {
+        std::fill(y.data.begin(), y.data.end(), 0.0f);
+    }
+    for (int c = 0; c < x.c; ++c) {
+        for (int h = 0; h < x.h; ++h) {
+            const float* src = x.ptr(c,h,0);
+            float* dst = y.ptr(c, h + pad_h, pad_w);
+            std::copy(src, src + x.w, dst);
+        }
+    }
+}
+
 namespace {
 
 size_t conv_weight_index(

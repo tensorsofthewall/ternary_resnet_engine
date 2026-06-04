@@ -27,3 +27,6 @@ Tensor pad_tensor(const Tensor& x, int pad_h, int pad_w);
 // Fused Padded Conv + BatchNorm and optional ReLU op
 Tensor conv2d_ternary_sparse_padded_bn_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn);
 Tensor conv2d_ternary_sparse_padded_bn_relu_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn);
+
+// To reduce padding allocation overhead
+void pad_tensor_into(const Tensor& x, int pad_h, int pad_w, Tensor& y);
