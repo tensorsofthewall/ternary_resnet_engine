@@ -4,7 +4,7 @@
 #include "tensor.hpp"
 #include "workspace.hpp"
 
-bool can_use_pattern_ocblock2_3x3s1_avx2(const Conv2DParams& conv);
+bool can_use_pattern_ocblock2_3x3_avx2(const Conv2DParams& conv);
 
 Tensor conv3x3s1_pattern_ocblock2_bn_avx2(
     const Tensor& x,

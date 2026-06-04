@@ -73,7 +73,7 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
         return conv3x3s1_sparse_ocblock4_bn_relu_avx2(x, conv, ocblock_plan, bn_fused, workspace);
     }
     if (enable_pattern_ocblock2_kernel &&
-        can_use_pattern_ocblock2_3x3s1_avx2(conv)) {
+        can_use_pattern_ocblock2_3x3_avx2(conv)) {
         const PatternOCBlock2ConvPlan& pattern_plan =
             m.pattern_ocblock2_plans.at(conv_name);
 
@@ -105,7 +105,7 @@ Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, co
     }
 
     if (enable_pattern_ocblock2_kernel &&
-        can_use_pattern_ocblock2_3x3s1_avx2(conv)) {
+        can_use_pattern_ocblock2_3x3_avx2(conv)) {
         const PatternOCBlock2ConvPlan& pattern_plan =
             m.pattern_ocblock2_plans.at(conv_name);
 

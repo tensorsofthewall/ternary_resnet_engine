@@ -6,11 +6,11 @@
 #include <immintrin.h>
 #include <stdexcept>
 
-bool can_use_pattern_ocblock2_3x3s1_avx2(const Conv2DParams& conv) {
+bool can_use_pattern_ocblock2_3x3_avx2(const Conv2DParams& conv) {
     return conv.kh == 3 &&
            conv.kw == 3 &&
-           conv.stride_h == 1 &&
-           conv.stride_w == 1 &&
+           conv.stride_h == conv.stride_w &&
+           (conv.stride_h == 1 || conv.stride_h == 2) &&
            conv.dilation_h == 1 &&
            conv.dilation_w == 1 &&
            conv.out_channels % 2 == 0;
@@ -48,6 +48,27 @@ constexpr int PATTERN_POS_POS=8;
 //     }
 // }
 
+inline __m256 load_width_stride1_8(const float* base) {
+    return _mm256_loadu_ps(base);
+}
+
+inline __m256 load_width_stride2_8(const float* base) {
+    return _mm256_set_ps(
+        base[14], base[12], base[10], base[8],
+        base[6], base[4], base[2], base[0]
+    );
+}
+
+inline __m256 load_width_8(const float* base, int stride_w) {
+    if (stride_w == 1) {
+        return load_width_stride1_8(base);
+    } 
+    if (stride_w == 2) {
+        return load_width_stride2_8(base);
+    }
+    throw std::runtime_error("Unsupported stride_w in pattern OC-block2 kernel: " + std::to_string(stride_w));
+}
+
 Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
     const Tensor& x,
     const Conv2DParams& conv,
@@ -56,7 +77,7 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
     EngineWorkspace& workspace,
     bool apply_relu
 ) {
-    if (!can_use_pattern_ocblock2_3x3s1_avx2(conv)) {
+    if (!can_use_pattern_ocblock2_3x3_avx2(conv)) {
         throw std::runtime_error(
             "Pattern OC-block2 AVX2 kernel called on unsupported conv"
         );
@@ -76,8 +97,8 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
     const Tensor& xin = *input_ptr;
 
-    const int out_h = x.h + 2 * conv.pad_h - 3 + 1;
-    const int out_w = x.w + 2 * conv.pad_w - 3 + 1;
+    const int out_h = (x.h + 2 * conv.pad_h - 3) / conv.stride_h + 1;
+    const int out_w = (x.w + 2 * conv.pad_w - 3) / conv.stride_w + 1;
 
     Tensor y(conv.out_channels, out_h, out_w);
 
@@ -131,13 +152,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
                     switch (bucket.pattern_id) {
                         case PATTERN_NEG_NEG: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h+ static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc0 = _mm256_sub_ps(acc0, xvec);
@@ -148,13 +170,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_NEG_ZERO: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc0 = _mm256_sub_ps(acc0, xvec);
@@ -164,13 +187,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_NEG_POS: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc0 = _mm256_sub_ps(acc0, xvec);
@@ -181,13 +205,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_ZERO_NEG: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc1 = _mm256_sub_ps(acc1, xvec);
@@ -197,13 +222,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_ZERO_POS: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc1 = _mm256_add_ps(acc1, xvec);
@@ -213,13 +239,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_POS_NEG: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc0 = _mm256_add_ps(acc0, xvec);
@@ -230,13 +257,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_POS_ZERO: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc0 = _mm256_add_ps(acc0, xvec);
@@ -246,13 +274,14 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
                         case PATTERN_POS_POS: {
                             for (const OCBlock2Action& action : bucket.actions) {
-                                const int ih = oh + static_cast<int>(action.ky);
-                                const int iw = ow + static_cast<int>(action.kx);
+                                const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                                const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
                                 const int base =
                                     (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                                const __m256 xvec = _mm256_loadu_ps(
-                                    xin.data.data() + static_cast<size_t>(base)
+                                const __m256 xvec = load_width_8(
+                                    xin.data.data() + static_cast<size_t>(base),
+                                    conv.stride_w
                                 );
 
                                 acc0 = _mm256_add_ps(acc0, xvec);
@@ -287,8 +316,8 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
                     const int8_t w1 = bucket.w1;
 
                     for (const OCBlock2Action& action : bucket.actions) {
-                        const int ih = oh + static_cast<int>(action.ky);
-                        const int iw = ow + static_cast<int>(action.kx);
+                        const int ih = oh * conv.stride_h + static_cast<int>(action.ky);
+                        const int iw = ow * conv.stride_w + static_cast<int>(action.kx);
 
                         const int idx =
                             (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
