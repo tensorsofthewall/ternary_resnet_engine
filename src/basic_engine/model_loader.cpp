@@ -4,6 +4,7 @@
 #include "sparse_ocblock_plan.hpp"
 #include "pattern_ocblock2_plan.hpp"
 #include "pattern_ocblock4_plan.hpp"
+#include "conv1_ocblock4_plan.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -168,6 +169,7 @@ Model load_model(const std::filesystem::path& path) {
     // build_sparse_ocblock4_conv_plans(model);
     build_pattern_ocblock2_plans(model);
     build_pattern_ocblock4_plans(model);
+    build_conv1_ocblock4_plans(model);
     build_fused_bns(model);
     return model;
 }

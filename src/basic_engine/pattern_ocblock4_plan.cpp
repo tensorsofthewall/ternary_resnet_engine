@@ -22,13 +22,22 @@ size_t weight_index(
 bool supports_pattern_ocblock4_plan(const Conv2DParams& conv) {
     return conv.kh == 3 &&
            conv.kw == 3 &&
-           conv.stride_h == 1 &&
-           conv.stride_w == 1 &&
            conv.dilation_h == 1 &&
            conv.dilation_w == 1 &&
-           conv.in_channels == 512 &&
            conv.out_channels == 512 &&
-           conv.out_channels % 4 == 0;
+           conv.out_channels % 4 == 0 &&
+           (
+               (
+                   conv.in_channels == 512 &&
+                   conv.stride_h == 1 &&
+                   conv.stride_w == 1
+               ) ||
+               (
+                   conv.in_channels == 256 &&
+                   conv.stride_h == 2 &&
+                   conv.stride_w == 2
+               )
+           );
 }
 
 int ternary_digit(int8_t w) {

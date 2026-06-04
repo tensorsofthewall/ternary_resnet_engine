@@ -6,6 +6,9 @@
 #include "conv3x3_sparse_ocblock_avx2.hpp"
 #include "conv3x3_pattern_ocblock2_avx2.hpp"
 #include "conv3x3_pattern_ocblock4_avx2.hpp"
+#include "conv1_ocblock4_avx2.hpp"
+
+#include <stdexcept>
 
 namespace {
 
@@ -71,6 +74,40 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
     constexpr bool enable_pattern_ocblock2_kernel = true;
     constexpr bool enable_pattern_ocblock2_spatial2_kernel = true;
     constexpr bool enable_pattern_ocblock4_layer4_kernel = true;
+    constexpr bool enable_conv1_ocblock4_kernel = true;
+
+    if (enable_conv1_ocblock4_kernel &&
+        can_use_conv1_ocblock4_7x7s2_avx2(conv)) {
+        const auto plan_it = m.conv1_ocblock4_plans.find(conv_name);
+
+        if (plan_it == m.conv1_ocblock4_plans.end()) {
+            throw std::runtime_error(
+                "Missing conv1 OC-Block4 plan for conv: " + conv_name
+            );
+        }
+
+        return conv1_ocblock4_7x7s2_bn_relu_avx2(
+            x,
+            conv,
+            plan_it->second,
+            bn_fused,
+            workspace
+        );
+    }
+
+    if (enable_pattern_ocblock4_layer4_kernel &&
+        can_use_pattern_ocblock4_layer4_s2_3x3_avx2(conv)) {
+        const PatternOCBlock4ConvPlan& ocblock4_plan =
+            m.pattern_ocblock4_plans.at(conv_name);
+
+        return conv3x3_pattern_ocblock4_layer4_s2_bn_relu_avx2(
+            x,
+            conv,
+            ocblock4_plan,
+            bn_fused,
+            workspace
+        );
+    }
 
     if (enable_pattern_ocblock4_layer4_kernel &&
         can_use_pattern_ocblock4_layer4_3x3_avx2(conv)) {
@@ -134,6 +171,20 @@ Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, co
     constexpr bool enable_pattern_ocblock2_kernel = true;
     constexpr bool enable_pattern_ocblock2_spatial2_kernel = true;
     constexpr bool enable_pattern_ocblock4_layer4_kernel = true;
+
+    if (enable_pattern_ocblock4_layer4_kernel &&
+        can_use_pattern_ocblock4_layer4_s2_3x3_avx2(conv)) {
+        const PatternOCBlock4ConvPlan& ocblock4_plan =
+            m.pattern_ocblock4_plans.at(conv_name);
+
+        return conv3x3_pattern_ocblock4_layer4_s2_bn_avx2(
+            x,
+            conv,
+            ocblock4_plan,
+            bn_fused,
+            workspace
+        );
+    }
 
     if (enable_pattern_ocblock4_layer4_kernel &&
         can_use_pattern_ocblock4_layer4_3x3_avx2(conv)) {
