@@ -126,6 +126,7 @@ struct OCBlock2Action {
 };
 
 struct OCBlock2PatternBucket {
+    int pattern_id = 0;
     int8_t w0 = 0;
     int8_t w1 = 0;
 

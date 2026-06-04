@@ -13,32 +13,40 @@ bool can_use_pattern_ocblock2_3x3s1_avx2(const Conv2DParams& conv) {
            conv.stride_w == 1 &&
            conv.dilation_h == 1 &&
            conv.dilation_w == 1 &&
-           conv.in_channels >= 256 &&
-           conv.out_channels >= 256 &&
            conv.out_channels % 2 == 0;
 }
 
 namespace {
 
-inline void apply_pattern(
-    __m256& acc0,
-    __m256& acc1,
-    const __m256& x,
-    int8_t w0,
-    int8_t w1
-) {
-    if (w0 == 1) {
-        acc0 = _mm256_add_ps(acc0, x);
-    } else if (w0 == -1) {
-        acc0 = _mm256_sub_ps(acc0, x);
-    }
+constexpr int PATTERN_NEG_NEG=0;
+constexpr int PATTERN_NEG_ZERO=1;
+constexpr int PATTERN_NEG_POS=2;
+constexpr int PATTERN_ZERO_NEG=3;
+constexpr int PATTERN_ZERO_ZERO=4;
+constexpr int PATTERN_ZERO_POS=5;
+constexpr int PATTERN_POS_NEG=6;
+constexpr int PATTERN_POS_ZERO=7;
+constexpr int PATTERN_POS_POS=8;
 
-    if (w1 == 1) {
-        acc1 = _mm256_add_ps(acc1, x);
-    } else if (w1 == -1) {
-        acc1 = _mm256_sub_ps(acc1, x);
-    }
-}
+// inline void apply_pattern(
+//     __m256& acc0,
+//     __m256& acc1,
+//     const __m256& x,
+//     int8_t w0,
+//     int8_t w1
+// ) {
+//     if (w0 == 1) {
+//         acc0 = _mm256_add_ps(acc0, x);
+//     } else if (w0 == -1) {
+//         acc0 = _mm256_sub_ps(acc0, x);
+//     }
+
+//     if (w1 == 1) {
+//         acc1 = _mm256_add_ps(acc1, x);
+//     } else if (w1 == -1) {
+//         acc1 = _mm256_sub_ps(acc1, x);
+//     }
+// }
 
 Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
     const Tensor& x,
@@ -99,23 +107,162 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
                 __m256 acc0 = _mm256_setzero_ps();
                 __m256 acc1 = _mm256_setzero_ps();
 
+                // for (const OCBlock2PatternBucket& bucket : block.buckets) {
+                //     const int8_t w0 = bucket.w0;
+                //     const int8_t w1 = bucket.w1;
+
+                //     for (const OCBlock2Action& action : bucket.actions) {
+                //         const int ih = oh + static_cast<int>(action.ky);
+                //         const int iw = ow + static_cast<int>(action.kx);
+
+                //         const int base =
+                //             (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                //         const float* p =
+                //             xin.data.data() + static_cast<size_t>(base);
+
+                //         const __m256 xvec = _mm256_loadu_ps(p);
+
+                //         apply_pattern(acc0, acc1, xvec, w0, w1);
+                //     }
+                // }
+
                 for (const OCBlock2PatternBucket& bucket : block.buckets) {
-                    const int8_t w0 = bucket.w0;
-                    const int8_t w1 = bucket.w1;
+                    switch (bucket.pattern_id) {
+                        case PATTERN_NEG_NEG: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                    for (const OCBlock2Action& action : bucket.actions) {
-                        const int ih = oh + static_cast<int>(action.ky);
-                        const int iw = ow + static_cast<int>(action.kx);
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
 
-                        const int base =
-                            (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+                                acc0 = _mm256_sub_ps(acc0, xvec);
+                                acc1 = _mm256_sub_ps(acc1, xvec);
+                            }
+                            break;
+                        }
 
-                        const float* p =
-                            xin.data.data() + static_cast<size_t>(base);
+                        case PATTERN_NEG_ZERO: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
 
-                        const __m256 xvec = _mm256_loadu_ps(p);
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
 
-                        apply_pattern(acc0, acc1, xvec, w0, w1);
+                                acc0 = _mm256_sub_ps(acc0, xvec);
+                            }
+                            break;
+                        }
+
+                        case PATTERN_NEG_POS: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
+
+                                acc0 = _mm256_sub_ps(acc0, xvec);
+                                acc1 = _mm256_add_ps(acc1, xvec);
+                            }
+                            break;
+                        }
+
+                        case PATTERN_ZERO_NEG: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
+
+                                acc1 = _mm256_sub_ps(acc1, xvec);
+                            }
+                            break;
+                        }
+
+                        case PATTERN_ZERO_POS: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
+
+                                acc1 = _mm256_add_ps(acc1, xvec);
+                            }
+                            break;
+                        }
+
+                        case PATTERN_POS_NEG: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
+
+                                acc0 = _mm256_add_ps(acc0, xvec);
+                                acc1 = _mm256_sub_ps(acc1, xvec);
+                            }
+                            break;
+                        }
+
+                        case PATTERN_POS_ZERO: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
+
+                                acc0 = _mm256_add_ps(acc0, xvec);
+                            }
+                            break;
+                        }
+
+                        case PATTERN_POS_POS: {
+                            for (const OCBlock2Action& action : bucket.actions) {
+                                const int ih = oh + static_cast<int>(action.ky);
+                                const int iw = ow + static_cast<int>(action.kx);
+                                const int base =
+                                    (static_cast<int>(action.ic) * xin.h + ih) * xin.w + iw;
+
+                                const __m256 xvec = _mm256_loadu_ps(
+                                    xin.data.data() + static_cast<size_t>(base)
+                                );
+
+                                acc0 = _mm256_add_ps(acc0, xvec);
+                                acc1 = _mm256_add_ps(acc1, xvec);
+                            }
+                            break;
+                        }
+
+                        default:
+                            throw std::runtime_error("Unexpected OC-block2 pattern id");
                     }
                 }
 

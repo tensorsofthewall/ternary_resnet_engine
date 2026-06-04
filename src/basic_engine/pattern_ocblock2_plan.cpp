@@ -3,6 +3,7 @@
 #include <array>
 #include <stdexcept>
 #include <utility>
+#include <algorithm>
 
 namespace {
 
@@ -130,13 +131,21 @@ PatternOCBlock2ConvPlan build_pattern_ocblock2_plan(const Conv2DParams& conv) {
             }
 
             OCBlock2PatternBucket bucket;
+            bucket.pattern_id = idx;
             bucket.w0 = w0;
             bucket.w1 = w1;
             bucket.actions = std::move(actions);
 
             block.buckets.push_back(std::move(bucket));
         }
-
+        // Sort buckets by size for more efficient dispatching in the kernel
+        std::sort(
+            block.buckets.begin(),
+            block.buckets.end(),
+            [](const OCBlock2PatternBucket& a, const OCBlock2PatternBucket& b) {
+                return a.actions.size() > b.actions.size();
+            }
+        );
         plan.oc_blocks.push_back(std::move(block));
     }
 
