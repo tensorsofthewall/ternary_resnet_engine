@@ -6,6 +6,8 @@
 #include <immintrin.h>
 #include <stdexcept>
 
+#include <omp.h>
+
 bool can_use_conv1_ocblock4_7x7s2_avx2(const Conv2DParams& conv) {
     return conv.name == "conv1" &&
            conv.in_channels == 3 &&
@@ -86,6 +88,9 @@ Tensor conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
 
     const __m256 zero_v = _mm256_setzero_ps();
 
+    // #pragma omp parallel for schedule(static)
+    // for (int block_idx=0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
+    //     const Conv1OCBlock4Plan& block = plan.oc_blocks[block_idx];
     for (const Conv1OCBlock4Plan& block : plan.oc_blocks) {
         const int oc = block.oc_start;
 

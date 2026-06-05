@@ -63,6 +63,7 @@ namespace {
 
         const __m256 zero_v = _mm256_setzero_ps();
         
+        #pragma omp parallel for schedule(static)
         for (int oc = 0; oc < conv.out_channels; ++oc) {
             const ConvOCPlan& oc_plan = plan.oc_plans[static_cast<size_t>(oc)];
 

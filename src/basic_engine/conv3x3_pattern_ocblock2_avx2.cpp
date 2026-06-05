@@ -6,6 +6,8 @@
 #include <immintrin.h>
 #include <stdexcept>
 
+#include <omp.h>
+
 bool can_use_pattern_ocblock2_3x3_avx2(const Conv2DParams& conv) {
     return conv.kh == 3 &&
            conv.kw == 3 &&
@@ -203,7 +205,10 @@ Tensor conv3x3s1_pattern_ocblock2_bn_avx2_impl(
 
     const __m256 zero_v = _mm256_setzero_ps();
 
-    for (const OCBlock2PatternPlan& block : plan.oc_blocks) {
+    #pragma omp parallel for schedule(static)
+    for (int block_idx=0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
+        const OCBlock2PatternPlan& block = plan.oc_blocks[block_idx];
+    // for (const OCBlock2PatternPlan& block : plan.oc_blocks) {
         const int oc = block.oc_start;
 
         const __m256 scale0 = _mm256_set1_ps(
@@ -489,7 +494,10 @@ Tensor conv3x3_pattern_ocblock2_spatial2_bn_avx2_impl(
 
     const __m256 zero_v = _mm256_setzero_ps();
 
-    for (const OCBlock2PatternPlan& block : plan.oc_blocks) {
+    #pragma omp parallel for schedule(static)
+    for (int block_idx=0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
+        const OCBlock2PatternPlan& block = plan.oc_blocks[block_idx];
+    // for (const OCBlock2PatternPlan& block : plan.oc_blocks) {
         const int oc = block.oc_start;
 
         const __m256 scale0 = _mm256_set1_ps(

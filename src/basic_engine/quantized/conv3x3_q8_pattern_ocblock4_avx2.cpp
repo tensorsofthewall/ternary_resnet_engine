@@ -5,6 +5,8 @@
 #include <immintrin.h>
 #include <stdexcept>
 
+#include <omp.h>
+
 bool can_use_q8_ocblock4_layer4_s1_3x3_avx2(const Conv2DParams& conv) {
     return conv.kh == 3 &&
            conv.kw == 3 &&
@@ -134,7 +136,10 @@ Tensor conv3x3_q8_ocblock4_layer4_s1_bn_avx2_impl(
 
     Tensor y(conv.out_channels, out_h, out_w);
 
-    for (const OCBlock4PatternPlan& block : plan.oc_blocks) {
+    #pragma omp parallel for schedule(static)
+    for (int block_idx=0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
+    // for (const OCBlock4PatternPlan& block : plan.oc_blocks) {
+        const OCBlock4PatternPlan& block = plan.oc_blocks[block_idx];
         const int oc = block.oc_start;
 
         const float out_scale0 =

@@ -6,6 +6,8 @@
 #include <immintrin.h>
 #include <stdexcept>
 
+#include <omp.h>
+
 bool can_use_pattern_ocblock4_layer4_3x3_avx2(const Conv2DParams& conv) {
     return conv.kh == 3 &&
            conv.kw == 3 &&
@@ -308,7 +310,9 @@ Tensor conv3x3_pattern_ocblock4_layer4_bn_avx2_impl(
         throw std::runtime_error("Layer4 OC-block4 kernel expected out_w <= 8");
     }
 
-    for (const OCBlock4PatternPlan& block : plan.oc_blocks) {
+    #pragma omp parallel
+    for (int block_idx=0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
+        const OCBlock4PatternPlan& block = plan.oc_blocks[block_idx];
         const int oc = block.oc_start;
 
         const __m256 scale0 = _mm256_set1_ps(bn.scale[static_cast<size_t>(oc + 0)]);
@@ -409,7 +413,10 @@ Tensor conv3x3_pattern_ocblock4_layer4_s2_bn_avx2_impl(
     const __m256 zero_v = _mm256_setzero_ps();
     constexpr int valid_lanes = 7;
 
-    for (const OCBlock4PatternPlan& block : plan.oc_blocks) {
+    #pragma omp parallel for schedule(static)
+    for (int block_idx=0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
+        // for (const OCBlock4PatternPlan& block : plan.oc_blocks) { --- IGNORE ---
+        const OCBlock4PatternPlan& block = plan.oc_blocks[block_idx];
         const int oc = block.oc_start;
 
         const __m256 scale0 = _mm256_set1_ps(

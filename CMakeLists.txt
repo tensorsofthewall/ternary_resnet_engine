@@ -4,6 +4,7 @@ project(basic_engine LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(basic_engine
     src/basic_engine/main.cpp
@@ -76,3 +77,8 @@ target_compile_options(benchmark_layer4_q8 PRIVATE
     -mavx2
     -mfma
 )
+
+find_package(OpenMP REQUIRED)
+
+target_link_libraries(basic_engine PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(benchmark_layer4_q8 PRIVATE OpenMP::OpenMP_CXX)
