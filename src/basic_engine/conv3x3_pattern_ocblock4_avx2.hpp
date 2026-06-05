@@ -4,37 +4,30 @@
 #include "tensor.hpp"
 #include "workspace.hpp"
 
+bool can_use_pattern_ocblock4_s1_3x3_avx2(const Conv2DParams& conv);
 bool can_use_pattern_ocblock4_layer4_3x3_avx2(const Conv2DParams& conv);
 bool can_use_pattern_ocblock4_layer4_s2_3x3_avx2(const Conv2DParams& conv);
 
-Tensor conv3x3_pattern_ocblock4_layer4_bn_avx2(
-    const Tensor& x,
-    const Conv2DParams& conv,
-    const PatternOCBlock4ConvPlan& plan,
-    const BNFusedParams& bn,
-    EngineWorkspace& workspace
-);
+void conv3x3_pattern_ocblock4_s1_bn_avx2(
+    const Tensor& x, const Conv2DParams& conv, const PatternOCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out);
 
-Tensor conv3x3_pattern_ocblock4_layer4_bn_relu_avx2(
-    const Tensor& x,
-    const Conv2DParams& conv,
-    const PatternOCBlock4ConvPlan& plan,
-    const BNFusedParams& bn,
-    EngineWorkspace& workspace
-);
+void conv3x3_pattern_ocblock4_s1_bn_relu_avx2(
+    const Tensor& x, const Conv2DParams& conv, const PatternOCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out);
 
-Tensor conv3x3_pattern_ocblock4_layer4_s2_bn_avx2(
-    const Tensor& x,
-    const Conv2DParams& conv,
-    const PatternOCBlock4ConvPlan& plan,
-    const BNFusedParams& bn,
-    EngineWorkspace& workspace
-);
+void conv3x3_pattern_ocblock4_layer4_bn_avx2(
+    const Tensor& x, const Conv2DParams& conv, const PatternOCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out);
 
-Tensor conv3x3_pattern_ocblock4_layer4_s2_bn_relu_avx2(
-    const Tensor& x,
-    const Conv2DParams& conv,
-    const PatternOCBlock4ConvPlan& plan,
-    const BNFusedParams& bn,
-    EngineWorkspace& workspace
-);
+void conv3x3_pattern_ocblock4_layer4_bn_relu_avx2(
+    const Tensor& x, const Conv2DParams& conv, const PatternOCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out);
+
+void conv3x3_pattern_ocblock4_layer4_s2_bn_avx2(
+    const Tensor& x, const Conv2DParams& conv, const PatternOCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out);
+
+void conv3x3_pattern_ocblock4_layer4_s2_bn_relu_avx2(
+    const Tensor& x, const Conv2DParams& conv, const PatternOCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out);

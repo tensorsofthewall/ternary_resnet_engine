@@ -37,7 +37,7 @@ namespace {
         throw std::runtime_error("Unsupported stride_w in load_width_8: " + std::to_string(stride_w));
     }
 
-    Tensor conv2d_ternary_sparse_padded_bn_avx2_width_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu, EngineWorkspace& workspace) {
+    void conv2d_ternary_sparse_padded_bn_avx2_width_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu, EngineWorkspace& workspace, Tensor& y_out) {
         if (!can_use_avx2_width_kernel(conv)) {
             throw std::runtime_error("AVX2 width-kernel conv called on unsupported layer: " + conv.name);
         }
@@ -59,7 +59,7 @@ namespace {
         const int out_h = (x.h + 2 * conv.pad_h - conv.kh)/conv.stride_h + 1;
         const int out_w = (x.w + 2 * conv.pad_w - conv.kw)/conv.stride_w + 1;
 
-        Tensor y(conv.out_channels, out_h, out_w);
+        y_out.reuse(conv.out_channels, out_h, out_w);
 
         const __m256 zero_v = _mm256_setzero_ps();
         
@@ -100,7 +100,7 @@ namespace {
                     if (apply_relu) {
                         acc = _mm256_max_ps(acc, zero_v);
                     }
-                    _mm256_storeu_ps(y.ptr(oc,oh,ow), acc);
+                    _mm256_storeu_ps(y_out.ptr(oc,oh,ow), acc);
                 }
                 for (; ow < out_w; ++ow) {
                     float acc = 0.0f;
@@ -122,18 +122,17 @@ namespace {
                     if (apply_relu && acc < 0.0f) {
                         acc = 0.0f;
                     }
-                    y(oc, oh, ow) = acc;
+                    y_out(oc, oh, ow) = acc;
                 }
             }
         }
-        return y;
     }
 }
 
-Tensor conv2d_ternary_sparse_padded_bn_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace) {
-    return conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,false,workspace);
+void conv2d_ternary_sparse_padded_bn_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out) {
+    conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,false,workspace,y_out);
 }
 
-Tensor conv2d_ternary_sparse_padded_bn_relu_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace) {
-    return conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,true,workspace);
+void conv2d_ternary_sparse_padded_bn_relu_avx2_width(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out) {
+    conv2d_ternary_sparse_padded_bn_avx2_width_impl(x,conv,plan,bn,true,workspace,y_out);
 }

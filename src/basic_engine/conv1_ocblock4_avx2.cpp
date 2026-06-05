@@ -50,12 +50,13 @@ inline void apply_weight(
     }
 }
 
-Tensor conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
+void conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
     const Tensor& x,
     const Conv2DParams& conv,
     const Conv1OCBlock4ConvPlan& plan,
     const BNFusedParams& bn,
-    EngineWorkspace& workspace
+    EngineWorkspace& workspace,
+    Tensor& y_out
 ) {
     if (!can_use_conv1_ocblock4_7x7s2_avx2(conv)) {
         throw std::runtime_error(
@@ -84,7 +85,7 @@ Tensor conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
         );
     }
 
-    Tensor y(conv.out_channels, out_h, out_w);
+    y_out.reuse(conv.out_channels, out_h, out_w);
 
     const __m256 zero_v = _mm256_setzero_ps();
 
@@ -164,31 +165,21 @@ Tensor conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
                 acc2 = _mm256_max_ps(acc2, zero_v);
                 acc3 = _mm256_max_ps(acc3, zero_v);
 
-                _mm256_storeu_ps(y.ptr(oc + 0, oh, ow), acc0);
-                _mm256_storeu_ps(y.ptr(oc + 1, oh, ow), acc1);
-                _mm256_storeu_ps(y.ptr(oc + 2, oh, ow), acc2);
-                _mm256_storeu_ps(y.ptr(oc + 3, oh, ow), acc3);
+                _mm256_storeu_ps(y_out.ptr(oc + 0, oh, ow), acc0);
+                _mm256_storeu_ps(y_out.ptr(oc + 1, oh, ow), acc1);
+                _mm256_storeu_ps(y_out.ptr(oc + 2, oh, ow), acc2);
+                _mm256_storeu_ps(y_out.ptr(oc + 3, oh, ow), acc3);
             }
         }
     }
 
-    return y;
 }
 
 } // namespace
 
-Tensor conv1_ocblock4_7x7s2_bn_relu_avx2(
-    const Tensor& x,
-    const Conv2DParams& conv,
-    const Conv1OCBlock4ConvPlan& plan,
-    const BNFusedParams& bn,
-    EngineWorkspace& workspace
+void conv1_ocblock4_7x7s2_bn_relu_avx2(
+    const Tensor& x, const Conv2DParams& conv, const Conv1OCBlock4ConvPlan& plan,
+    const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out
 ) {
-    return conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
-        x,
-        conv,
-        plan,
-        bn,
-        workspace
-    );
+    conv1_ocblock4_7x7s2_bn_relu_avx2_impl(x, conv, plan, bn, workspace, y_out);
 }

@@ -19,7 +19,7 @@ namespace {
         }
     }
 
-    Tensor conv3x3s1_sparse_ocblock4_bn_avx2_impl(const Tensor& x, const Conv2DParams& conv, const SparseOCBlock4ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace, bool apply_relu) {
+    void conv3x3s1_sparse_ocblock4_bn_avx2_impl(const Tensor& x, const Conv2DParams& conv, const SparseOCBlock4ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace, bool apply_relu, Tensor& y_out) {
         if (!can_use_sparse_ocblock4_3x3s1_avx2(conv)) {
             throw std::runtime_error("Sparse OC-Block4 AVX2 kernel called on unsupported layer: " + conv.name);
         }
@@ -40,7 +40,7 @@ namespace {
         const int out_h = x.h + 2 * conv.pad_h - 3 + 1;
         const int out_w = x.w + 2 * conv.pad_w - 3 + 1;
 
-        Tensor y(conv.out_channels, out_h, out_w);
+        y_out.reuse(conv.out_channels, out_h, out_w);
 
         const __m256 zero_v = _mm256_setzero_ps();
 
@@ -96,10 +96,10 @@ namespace {
                         acc3 = _mm256_max_ps(acc3, zero_v);
                     }
 
-                    _mm256_storeu_ps(y.ptr(oc + 0, oh, ow), acc0);
-                    _mm256_storeu_ps(y.ptr(oc + 1, oh, ow), acc1);
-                    _mm256_storeu_ps(y.ptr(oc + 2, oh, ow), acc2);
-                    _mm256_storeu_ps(y.ptr(oc + 3, oh, ow), acc3);
+                    _mm256_storeu_ps(y_out.ptr(oc + 0, oh, ow), acc0);
+                    _mm256_storeu_ps(y_out.ptr(oc + 1, oh, ow), acc1);
+                    _mm256_storeu_ps(y_out.ptr(oc + 2, oh, ow), acc2);
+                    _mm256_storeu_ps(y_out.ptr(oc + 3, oh, ow), acc3);
                 }
 
                 for (; ow < out_w; ++ow) {
@@ -158,21 +158,20 @@ namespace {
                         acc3 = std::max(acc3, 0.0f);
                     }
 
-                    y(oc + 0, oh, ow) = acc0;
-                    y(oc + 1, oh, ow) = acc1;
-                    y(oc + 2, oh, ow) = acc2;
-                    y(oc + 3, oh, ow) = acc3;
+                    y_out(oc + 0, oh, ow) = acc0;
+                    y_out(oc + 1, oh, ow) = acc1;
+                    y_out(oc + 2, oh, ow) = acc2;
+                    y_out(oc + 3, oh, ow) = acc3;
                 }
             }
         }
-        return y;
     }
 }
 
-Tensor conv3x3s1_sparse_ocblock4_bn_avx2(const Tensor& x, const Conv2DParams& conv, const SparseOCBlock4ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace) {
-    return conv3x3s1_sparse_ocblock4_bn_avx2_impl(x, conv, plan, bn, workspace, false);
+void conv3x3s1_sparse_ocblock4_bn_avx2(const Tensor& x, const Conv2DParams& conv, const SparseOCBlock4ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out) {
+    conv3x3s1_sparse_ocblock4_bn_avx2_impl(x, conv, plan, bn, workspace, false, y_out);
 }
 
-Tensor conv3x3s1_sparse_ocblock4_bn_relu_avx2(const Tensor& x, const Conv2DParams& conv, const SparseOCBlock4ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace) {
-    return conv3x3s1_sparse_ocblock4_bn_avx2_impl(x, conv, plan, bn, workspace, true);
+void conv3x3s1_sparse_ocblock4_bn_relu_avx2(const Tensor& x, const Conv2DParams& conv, const SparseOCBlock4ConvPlan& plan, const BNFusedParams& bn, EngineWorkspace& workspace, Tensor& y_out) {
+    conv3x3s1_sparse_ocblock4_bn_avx2_impl(x, conv, plan, bn, workspace, true, y_out);
 }
