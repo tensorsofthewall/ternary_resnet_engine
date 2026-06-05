@@ -14,6 +14,13 @@ struct Tensor {
 
     Tensor(int channels, int height, int width): c(channels), h(height), w(width), data(static_cast<size_t>(channels * height * width), 0.0f) {}
 
+    // Reuse this tensor for new shape: no-op (no alloc, no zero-init) if size unchanged.
+    void reuse(int channels, int height, int width) {
+        c = channels; h = height; w = width;
+        const size_t n = static_cast<size_t>(c * h * w);
+        if (data.size() != n) data.resize(n);
+    }
+
     size_t size() const {
         return data.size();
     }

@@ -172,9 +172,26 @@ struct OCBlock4PatternBucket {
     std::vector<OCBlock4PatternAction> actions;
 };
 
+// Flat per-action record storing the 4 weights alongside the spatial position.
+// Actions are stored sorted by (w0,w1,w2,w3) pattern so consecutive actions with
+// the same pattern are together — branch prediction is perfect within each run.
+struct OCBlock4FlatAction {
+    uint16_t ic = 0;
+    uint8_t  ky = 0;
+    uint8_t  kx = 0;
+    int8_t   w0 = 0;
+    int8_t   w1 = 0;
+    int8_t   w2 = 0;
+    int8_t   w3 = 0;
+    // 8 bytes total: naturally aligned, one cache line holds 8 actions.
+};
+
 struct OCBlock4PatternPlan {
     int oc_start = 0;
     std::vector<OCBlock4PatternBucket> buckets;
+    // Flat view: all non-(all-zero) actions in one contiguous block.
+    // Sorted by bucket pattern for branch-prediction benefit without pointer chasing.
+    std::vector<OCBlock4FlatAction> flat_actions;
 };
 
 struct PatternOCBlock4ConvPlan {

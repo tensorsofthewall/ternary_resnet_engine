@@ -112,6 +112,38 @@ Tensor relu(const Tensor& x) {
     return y;
 }
 
+void relu_inplace(Tensor& x) {
+    for (float& v : x.data) v = std::max(0.0f, v);
+}
+
+void add_inplace(Tensor& acc, const Tensor& b) {
+    for (size_t i = 0; i < acc.data.size(); ++i) acc.data[i] += b.data[i];
+}
+
+void maxpool2d_3x3_s2_p1_into(const Tensor& x, Tensor& y_out) {
+    const int kh = 3, kw = 3, stride = 2, pad = 1;
+    const int out_h = (x.h + 2 * pad - kh) / stride + 1;
+    const int out_w = (x.w + 2 * pad - kw) / stride + 1;
+    y_out.reuse(x.c, out_h, out_w);
+
+    for (int c = 0; c < x.c; ++c) {
+        for (int oh = 0; oh < out_h; ++oh) {
+            for (int ow = 0; ow < out_w; ++ow) {
+                float max_val = -std::numeric_limits<float>::infinity();
+                for (int ky = 0; ky < kh; ++ky) {
+                    for (int kx = 0; kx < kw; ++kx) {
+                        const int ih = oh * stride + ky - pad;
+                        const int iw = ow * stride + kx - pad;
+                        if (ih < 0 || ih >= x.h || iw < 0 || iw >= x.w) continue;
+                        max_val = std::max(max_val, x(c, ih, iw));
+                    }
+                }
+                y_out(c, oh, ow) = max_val;
+            }
+        }
+    }
+}
+
 Tensor add_tensors(const Tensor& a, const Tensor& b) {
     if (a.c != b.c || a.h != b.h || a.w != b.w) {
         throw std::runtime_error("Tensor shape mismatch in add_tensors");
@@ -359,7 +391,7 @@ Tensor conv2d_ternary_sparse_padded_scalar(
 
 // Fused Padded Sparse Conv2D+BatchNorm implementation
 // Helper for fused op with ReLU flag
-Tensor conv2d_ternary_sparse_padded_bn_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu) {
+void conv2d_ternary_sparse_padded_bn_impl(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, bool apply_relu, Tensor& y_out) {
     Tensor xpad;
     const Tensor* input_ptr = &x;
 
@@ -372,7 +404,7 @@ Tensor conv2d_ternary_sparse_padded_bn_impl(const Tensor& x, const Conv2DParams&
     const int out_h = (x.h + 2 * conv.pad_h - conv.kh) / conv.stride_h + 1;
     const int out_w = (x.w + 2 * conv.pad_w - conv.kw) / conv.stride_w + 1;
 
-    Tensor y(conv.out_channels, out_h, out_w);
+    y_out.reuse(conv.out_channels, out_h, out_w);
 
     for (int oc=0; oc < conv.out_channels; ++oc) {
         const ConvOCPlan& oc_plan = plan.oc_plans[static_cast<size_t>(oc)];
@@ -404,18 +436,16 @@ Tensor conv2d_ternary_sparse_padded_bn_impl(const Tensor& x, const Conv2DParams&
                 if (apply_relu && acc < 0.0f) {
                     acc = 0.0f;
                 }
-                y(oc, oh, ow) = acc;
+                y_out(oc, oh, ow) = acc;
             }
         }
     }
-    return y;
 }
 
-// Wrapper for Fused Sparse Conv2D+BatchNorm and Fused Sparse Conv2D+BatchNorm+ReLU
-Tensor conv2d_ternary_sparse_padded_bn_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn) {
-    return conv2d_ternary_sparse_padded_bn_impl(x, conv, plan, bn, false);
+void conv2d_ternary_sparse_padded_bn_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, Tensor& y_out) {
+    conv2d_ternary_sparse_padded_bn_impl(x, conv, plan, bn, false, y_out);
 }
 
-Tensor conv2d_ternary_sparse_padded_bn_relu_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn) {
-    return conv2d_ternary_sparse_padded_bn_impl(x, conv, plan, bn, true);
+void conv2d_ternary_sparse_padded_bn_relu_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, Tensor& y_out) {
+    conv2d_ternary_sparse_padded_bn_impl(x, conv, plan, bn, true, y_out);
 }

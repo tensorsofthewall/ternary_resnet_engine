@@ -25,25 +25,8 @@ bool supports_pattern_ocblock4_plan(const Conv2DParams& conv) {
            conv.dilation_h == 1 &&
            conv.dilation_w == 1 &&
            conv.out_channels % 4 == 0 &&
-           (
-               // layer4.0.conv1
-               (conv.in_channels == 256 &&
-                conv.out_channels == 512 &&
-                conv.stride_h == 2 &&
-                conv.stride_w == 2) ||
-
-               // layer4 stride-1
-               (conv.in_channels == 512 &&
-                conv.out_channels == 512 &&
-                conv.stride_h == 1 &&
-                conv.stride_w == 1) ||
-
-               // layer3.0.conv1
-               (conv.in_channels == 128 &&
-                conv.out_channels == 256 &&
-                conv.stride_h == 2 &&
-                conv.stride_w == 2)
-           );
+           conv.stride_h == conv.stride_w &&
+           (conv.stride_h == 1 || conv.stride_h == 2);
 }
 
 int ternary_digit(int8_t w) {
@@ -183,6 +166,20 @@ PatternOCBlock4ConvPlan build_pattern_ocblock4_plan(const Conv2DParams& conv) {
                 return a.actions.size() > b.actions.size();
             }
         );
+
+        // Build flat action list: all actions in one contiguous block, sorted by
+        // pattern (same order as the bucket sort above) for branch-prediction benefit.
+        block.flat_actions.reserve(
+            static_cast<size_t>(conv.in_channels * conv.kh * conv.kw)
+        );
+        for (const OCBlock4PatternBucket& bkt : block.buckets) {
+            for (const OCBlock4PatternAction& a : bkt.actions) {
+                block.flat_actions.push_back(OCBlock4FlatAction{
+                    a.ic, a.ky, a.kx,
+                    bkt.w0, bkt.w1, bkt.w2, bkt.w3
+                });
+            }
+        }
 
         plan.oc_blocks.push_back(std::move(block));
     }

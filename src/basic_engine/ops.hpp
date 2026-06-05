@@ -25,8 +25,12 @@ Tensor conv2d_ternary_sparse_padded_scalar(const Tensor& x, const Conv2DParams& 
 Tensor pad_tensor(const Tensor& x, int pad_h, int pad_w);
 
 // Fused Padded Conv + BatchNorm and optional ReLU op
-Tensor conv2d_ternary_sparse_padded_bn_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn);
-Tensor conv2d_ternary_sparse_padded_bn_relu_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn);
+void conv2d_ternary_sparse_padded_bn_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, Tensor& y_out);
+void conv2d_ternary_sparse_padded_bn_relu_scalar(const Tensor& x, const Conv2DParams& conv, const ConvPlan& plan, const BNFusedParams& bn, Tensor& y_out);
 
 // To reduce padding allocation overhead
 void pad_tensor_into(const Tensor& x, int pad_h, int pad_w, Tensor& y);
+
+void relu_inplace(Tensor& x);
+void add_inplace(Tensor& acc, const Tensor& b);
+void maxpool2d_3x3_s2_p1_into(const Tensor& x, Tensor& y_out);
