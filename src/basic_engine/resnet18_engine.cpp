@@ -29,11 +29,14 @@ void write_tensor_f32(const std::string& path, const Tensor& x) {
         throw std::runtime_error("Failed to write tensor dump file: " + path);
     }
 }
+constexpr bool enable_tensor_dumps = false;
+
 bool should_dump_layer4_q8_tensor(const std::string& name) {
-    // return name == "layer4.0.conv2" ||
-    //        name == "layer4.1.conv1" ||
-    //        name == "layer4.1.conv2";
-    return false;
+    if constexpr (!enable_tensor_dumps) {
+        return false;
+    }
+
+    return name == "layer3.0.conv1";
 }
 std::string sanitize_tensor_name(std::string name) {
     for (char& c : name) {
@@ -111,6 +114,7 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
     constexpr bool enable_pattern_ocblock4_layer4_kernel = true;
     constexpr bool enable_conv1_ocblock4_kernel = true;
     constexpr bool enable_q8_layer4_stride1_kernel = true;
+    constexpr bool enable_q8_layer3_s2_kernel = false;
 
     if (enable_q8_layer4_stride1_kernel &&
         can_use_q8_ocblock4_layer4_s1_3x3_avx2(conv)) {
@@ -126,6 +130,35 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
 
         return conv3x3_q8_ocblock4_layer4_s1_bn_relu_avx2(
             xq,
+            conv,
+            q8_plan,
+            bn_fused,
+            workspace
+        );
+    }
+
+    const bool is_q8_layer3_0_conv1 = conv_name == "layer3.0.conv1";
+    if (enable_q8_layer3_s2_kernel &&
+        is_q8_layer3_0_conv1 &&
+        can_use_q8_ocblock4_s2_3x3_avx2(conv)) {
+        const PatternOCBlock4ConvPlan& q8_plan =
+            m.pattern_ocblock4_plans.at(conv_name);
+
+        constexpr int extra_right_pad = 4;
+
+        QuantTensorI8& xq = quantize_pad_tensor_symmetric_i8_asymmetric_into(
+            x,
+            conv.pad_h,
+            conv.pad_h,
+            conv.pad_w,
+            conv.pad_w + extra_right_pad,
+            workspace.q8_padded_input_s2
+        );
+
+        return conv3x3_q8_ocblock4_s2_bn_relu_avx2_out_hw(
+            xq,
+            14,
+            14,
             conv,
             q8_plan,
             bn_fused,

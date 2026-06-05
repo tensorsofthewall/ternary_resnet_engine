@@ -7,4 +7,5 @@ struct EngineWorkspace {
     Tensor pad_buffer;
 
     QuantTensorI8 q8_padded_input;
+    QuantTensorI8 q8_padded_input_s2;
 };

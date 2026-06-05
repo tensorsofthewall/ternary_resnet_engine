@@ -21,3 +21,20 @@ QuantTensorI8& quantize_pad_tensor_symmetric_i8_into(
     int pad_w,
     QuantTensorI8& out
 );
+
+QuantTensorI8 pad_quant_tensor_i8_asymmetric(
+    const QuantTensorI8& x,
+    int pad_top,
+    int pad_bottom,
+    int pad_left,
+    int pad_right
+);
+
+QuantTensorI8& quantize_pad_tensor_symmetric_i8_asymmetric_into(
+    const Tensor& x,
+    int pad_top,
+    int pad_bottom,
+    int pad_left,
+    int pad_right,
+    QuantTensorI8& out
+);

@@ -24,19 +24,25 @@ bool supports_pattern_ocblock4_plan(const Conv2DParams& conv) {
            conv.kw == 3 &&
            conv.dilation_h == 1 &&
            conv.dilation_w == 1 &&
-           conv.out_channels == 512 &&
            conv.out_channels % 4 == 0 &&
            (
-               (
-                   conv.in_channels == 512 &&
-                   conv.stride_h == 1 &&
-                   conv.stride_w == 1
-               ) ||
-               (
-                   conv.in_channels == 256 &&
-                   conv.stride_h == 2 &&
-                   conv.stride_w == 2
-               )
+               // layer4.0.conv1
+               (conv.in_channels == 256 &&
+                conv.out_channels == 512 &&
+                conv.stride_h == 2 &&
+                conv.stride_w == 2) ||
+
+               // layer4 stride-1
+               (conv.in_channels == 512 &&
+                conv.out_channels == 512 &&
+                conv.stride_h == 1 &&
+                conv.stride_w == 1) ||
+
+               // layer3.0.conv1
+               (conv.in_channels == 128 &&
+                conv.out_channels == 256 &&
+                conv.stride_h == 2 &&
+                conv.stride_w == 2)
            );
 }
 
