@@ -14,3 +14,10 @@ QuantTensorI8 pad_quant_tensor_i8(
     int pad_h,
     int pad_w
 );
+
+QuantTensorI8& quantize_pad_tensor_symmetric_i8_into(
+    const Tensor& x,
+    int pad_h,
+    int pad_w,
+    QuantTensorI8& out
+);

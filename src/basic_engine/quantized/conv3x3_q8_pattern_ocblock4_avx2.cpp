@@ -19,12 +19,6 @@ bool can_use_q8_ocblock4_layer4_s1_3x3_avx2(const Conv2DParams& conv) {
 
 namespace {
 
-inline __m128i load_width7_i8_to_i32_4x2(const int8_t* base) {
-    // Placeholder helper not used in first version.
-    // Keeping this out for now would also be fine.
-    return _mm_setzero_si128();
-}
-
 inline int32_t q8_at(
     const QuantTensorI8& xq,
     int c,

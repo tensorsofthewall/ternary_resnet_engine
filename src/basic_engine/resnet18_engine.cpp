@@ -117,11 +117,11 @@ Tensor conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_nam
         const PatternOCBlock4ConvPlan& q8_plan =
             m.pattern_ocblock4_plans.at(conv_name);
 
-        QuantTensorI8 xq_raw = quantize_tensor_symmetric_i8(x);
-        QuantTensorI8 xq = pad_quant_tensor_i8(
-            xq_raw,
+        QuantTensorI8& xq = quantize_pad_tensor_symmetric_i8_into(
+            x,
             conv.pad_h,
-            conv.pad_w
+            conv.pad_w,
+            workspace.q8_padded_input
         );
 
         return conv3x3_q8_ocblock4_layer4_s1_bn_relu_avx2(
@@ -235,11 +235,11 @@ Tensor conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, co
         const PatternOCBlock4ConvPlan& q8_plan =
             m.pattern_ocblock4_plans.at(conv_name);
 
-        QuantTensorI8 xq_raw = quantize_tensor_symmetric_i8(x);
-        QuantTensorI8 xq = pad_quant_tensor_i8(
-            xq_raw,
+        QuantTensorI8& xq = quantize_pad_tensor_symmetric_i8_into(
+            x,
             conv.pad_h,
-            conv.pad_w
+            conv.pad_w,
+            workspace.q8_padded_input
         );
 
         return conv3x3_q8_ocblock4_layer4_s1_bn_avx2(
