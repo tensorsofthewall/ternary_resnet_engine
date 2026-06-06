@@ -212,6 +212,8 @@ add_executable(blocked_engine
     src/blocked_engine/blocked_model.cpp
     src/blocked_engine/q8_runtime.cpp
     src/blocked_engine/blocked_conv3x3.cpp
+    src/blocked_engine/blocked_ops.cpp
+    src/blocked_engine/blocked_conv1.cpp
     src/basic_engine/model_loader.cpp
     src/basic_engine/conv_plan.cpp
     src/basic_engine/bn_fusion.cpp
