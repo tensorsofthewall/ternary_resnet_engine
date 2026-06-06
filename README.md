@@ -27,8 +27,9 @@ All benchmark numbers in this README were measured on:
 - **Compiler**: GCC with `-O3 -march=native -mavx2 -mfma`
 - **Runtime threading**: OpenMP for the C++ engine, ORT intra-op threading for ONNX Runtime
 
-Most useful C++ scaling is up to around 8 threads. Beyond that, scaling can regress because
-the workload begins to hit cache/memory-layout limits and hyperthreading effects.
+Useful C++ scaling extends to about 8 P-cores, after which additional threads may land on
+E-cores or hit memory-layout limits. At 24 threads (all logical cores) the engine reaches
+~7.2 ms min and beats ORT INT8, though with higher median variance.
 
 ---
 
@@ -279,17 +280,25 @@ input = 3×224×224
 
 ### Current best comparison
 
+All numbers are `min_ms` over 100 timed runs after 20 warmup runs.
+
 | Threads | C++ engine | ORT FP32 | ORT INT8 | C++ vs ORT INT8 |
 |---:|---:|---:|---:|---:|
-| 1 | ~41.3 ms | ~25.8 ms | ~19.8 ms | ~2.1× slower |
-| 2 | ~22.4 ms | ~13.1 ms | ~12.0 ms | ~1.9× slower |
-| 4 | ~12.7 ms | ~7.0 ms | ~7.7 ms | ~1.6× slower |
-| 8 | ~8.3 ms | ~4.4 ms | ~6.2 ms | ~1.3× slower |
-| 16 | ~14.3 ms | ~3.9 ms | ~8.5 ms | regresses |
+| 1 | 41.4 ms | 25.8 ms | 19.9 ms | ~2.1× slower |
+| 2 | 22.3 ms | 13.2 ms | 12.1 ms | ~1.8× slower |
+| 4 | 12.6 ms | 6.8 ms | 7.9 ms | ~1.6× slower |
+| 8 | 8.2 ms | 4.3 ms | 6.2 ms | ~1.3× slower |
+| 16 | 9.2 ms | 4.1 ms | 10.3 ms | **1.1× faster** |
+| 24 | 7.2 ms | 3.7 ms | 8.4 ms | **1.2× faster** |
 
-The C++ engine is still slower than ORT, but the gap narrows with threading. ORT FP32
-continues to scale well at higher thread counts, while both ORT INT8 and the custom engine
-show some higher-thread inefficiency.
+At 1–8 threads the C++ engine trails ORT INT8. At 16–24 threads the custom engine pulls
+ahead of ORT INT8, which degrades significantly past 8 threads due to QDQ graph
+fragmentation and quantize/dequantize op overhead under contention. ORT FP32 continues to
+scale the best across all thread counts.
+
+The C++ engine shows high variance at 16T (min=9.2 ms, median=16.5 ms) and is more stable
+at 24T (min=7.2 ms, median=7.5 ms). This reflects E-core assignment variability from the
+OS scheduler on the i7-12800HX's hybrid topology.
 
 ### Optimization timeline
 
