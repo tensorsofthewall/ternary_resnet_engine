@@ -180,25 +180,11 @@ void benchmark_q8_stride2_conv(
 
     for (int i = 0; i < warmup; ++i) {
         if (apply_relu) {
-            y_q8 = conv3x3_q8_ocblock4_s2_bn_relu_avx2_out_hw(
-                xq,
-                shape.output_h,
-                shape.output_w,
-                conv,
-                plan,
-                bn,
-                workspace
-            );
+            conv3x3_q8_ocblock4_s2_bn_relu_avx2_out_hw(
+                xq, shape.output_h, shape.output_w, conv, plan, bn, workspace, y_q8);
         } else {
-            y_q8 = conv3x3_q8_ocblock4_s2_bn_avx2_out_hw(
-                xq,
-                shape.output_h,
-                shape.output_w,
-                conv,
-                plan,
-                bn,
-                workspace
-            );
+            conv3x3_q8_ocblock4_s2_bn_avx2_out_hw(
+                xq, shape.output_h, shape.output_w, conv, plan, bn, workspace, y_q8);
         }
     }
 
@@ -209,25 +195,11 @@ void benchmark_q8_stride2_conv(
         const auto start = std::chrono::high_resolution_clock::now();
 
         if (apply_relu) {
-            y_q8 = conv3x3_q8_ocblock4_s2_bn_relu_avx2_out_hw(
-                xq,
-                shape.output_h,
-                shape.output_w,
-                conv,
-                plan,
-                bn,
-                workspace
-            );
+            conv3x3_q8_ocblock4_s2_bn_relu_avx2_out_hw(
+                xq, shape.output_h, shape.output_w, conv, plan, bn, workspace, y_q8);
         } else {
-            y_q8 = conv3x3_q8_ocblock4_s2_bn_avx2_out_hw(
-                xq,
-                shape.output_h,
-                shape.output_w,
-                conv,
-                plan,
-                bn,
-                workspace
-            );
+            conv3x3_q8_ocblock4_s2_bn_avx2_out_hw(
+                xq, shape.output_h, shape.output_w, conv, plan, bn, workspace, y_q8);
         }
 
         const auto end = std::chrono::high_resolution_clock::now();
