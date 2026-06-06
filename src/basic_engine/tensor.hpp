@@ -21,6 +21,15 @@ struct Tensor {
         if (data.size() != n) data.resize(n);
     }
 
+    // Pre-allocate capacity so future reuse() calls within this size never reallocate.
+    void reserve(int channels, int height, int width) {
+        data.reserve(
+            static_cast<size_t>(channels) *
+            static_cast<size_t>(height) *
+            static_cast<size_t>(width)
+        );
+    }
+
     size_t size() const {
         return data.size();
     }

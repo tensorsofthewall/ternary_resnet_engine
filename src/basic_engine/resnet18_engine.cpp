@@ -33,7 +33,8 @@ void write_tensor_f32(const std::string& path, const Tensor& x) {
 }
 constexpr bool enable_tensor_dumps = false;
 
-bool should_dump_layer4_q8_tensor(const std::string& name) {
+// Optional debug helper for dumping intermediate tensors used by standalone kernel benchmarks.
+bool should_dump_intermediate_tensor(const std::string& name) {
     if constexpr (!enable_tensor_dumps) {
         return false;
     }
@@ -49,6 +50,26 @@ std::string sanitize_tensor_name(std::string name) {
 
     return name;
 }
+
+struct BasicBlockSpec {
+    const char* name;
+    const char* conv1;
+    const char* bn1;
+    const char* conv2;
+    const char* bn2;
+    const char* downsample_conv;
+    const char* downsample_bn;
+    bool has_downsample;
+};
+
+static constexpr BasicBlockSpec kLayer1_0{ "layer1.0", "layer1.0.conv1", "layer1.0.bn1", "layer1.0.conv2", "layer1.0.bn2", nullptr, nullptr, false };
+static constexpr BasicBlockSpec kLayer1_1{ "layer1.1", "layer1.1.conv1", "layer1.1.bn1", "layer1.1.conv2", "layer1.1.bn2", nullptr, nullptr, false };
+static constexpr BasicBlockSpec kLayer2_0{ "layer2.0", "layer2.0.conv1", "layer2.0.bn1", "layer2.0.conv2", "layer2.0.bn2", "layer2.0.downsample.0", "layer2.0.downsample.1", true };
+static constexpr BasicBlockSpec kLayer2_1{ "layer2.1", "layer2.1.conv1", "layer2.1.bn1", "layer2.1.conv2", "layer2.1.bn2", nullptr, nullptr, false };
+static constexpr BasicBlockSpec kLayer3_0{ "layer3.0", "layer3.0.conv1", "layer3.0.bn1", "layer3.0.conv2", "layer3.0.bn2", "layer3.0.downsample.0", "layer3.0.downsample.1", true };
+static constexpr BasicBlockSpec kLayer3_1{ "layer3.1", "layer3.1.conv1", "layer3.1.bn1", "layer3.1.conv2", "layer3.1.bn2", nullptr, nullptr, false };
+static constexpr BasicBlockSpec kLayer4_0{ "layer4.0", "layer4.0.conv1", "layer4.0.bn1", "layer4.0.conv2", "layer4.0.bn2", "layer4.0.downsample.0", "layer4.0.downsample.1", true };
+static constexpr BasicBlockSpec kLayer4_1{ "layer4.1", "layer4.1.conv1", "layer4.1.bn1", "layer4.1.conv2", "layer4.1.bn2", nullptr, nullptr, false };
 
 namespace {
 
@@ -109,7 +130,7 @@ namespace {
 void conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, EngineWorkspace& workspace, Tensor& y_out) {
     const Conv2DParams& conv = m.convs.at(conv_name);
     const ConvPlan& plan = m.conv_plans.at(conv_name);
-    const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
+    const BNFusedParams& bn_fused = m.fused_bns.at(bn_name);
     constexpr bool enable_ocblock_kernel = false;
     constexpr bool enable_pattern_ocblock2_kernel = true;
     constexpr bool enable_pattern_ocblock2_spatial4_kernel = true;
@@ -293,7 +314,7 @@ void conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_name,
 void conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, const std::string& bn_name, EngineWorkspace& workspace, Tensor& y_out) {
     const Conv2DParams& conv = m.convs.at(conv_name);
     const ConvPlan& plan = m.conv_plans.at(conv_name);
-    const BNFusedParams bn_fused = m.fused_bns.at(bn_name);
+    const BNFusedParams& bn_fused = m.fused_bns.at(bn_name);
     constexpr bool enable_ocblock_kernel = false;
     constexpr bool enable_pattern_ocblock2_kernel = true;
     constexpr bool enable_pattern_ocblock2_spatial4_kernel = true;
@@ -446,17 +467,16 @@ void conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, cons
 // Uses ws.buf_a and ws.buf_b as intermediates; ws.buf_identity for downsample.
 void basic_block_ws(
     const Model& m,
-    const std::string& prefix,
-    bool has_downsample,
+    const BasicBlockSpec& block,
     EngineWorkspace& ws
 ) {
-    if (has_downsample) {
-        conv_bn(m, ws.buf_x, prefix + ".downsample.0", prefix + ".downsample.1", ws, ws.buf_identity);
+    if (block.has_downsample) {
+        conv_bn(m, ws.buf_x, block.downsample_conv, block.downsample_bn, ws, ws.buf_identity);
     }
-    conv_bn_relu(m, ws.buf_x, prefix + ".conv1", prefix + ".bn1", ws, ws.buf_a);
-    conv_bn(m, ws.buf_a, prefix + ".conv2", prefix + ".bn2", ws, ws.buf_b);
+    conv_bn_relu(m, ws.buf_x, block.conv1, block.bn1, ws, ws.buf_a);
+    conv_bn(m, ws.buf_a, block.conv2, block.bn2, ws, ws.buf_b);
 
-    const Tensor& identity = has_downsample ? ws.buf_identity : ws.buf_x;
+    const Tensor& identity = block.has_downsample ? ws.buf_identity : ws.buf_x;
     add_inplace(ws.buf_b, identity);
     relu_inplace(ws.buf_b);
     std::swap(ws.buf_x, ws.buf_b);
@@ -471,7 +491,7 @@ Tensor conv_bn_relu_timed(
     EngineWorkspace& workspace,
     std::vector<TimingEntry>& timings
 ) {
-    if (should_dump_layer4_q8_tensor(conv_name)) {
+    if (should_dump_intermediate_tensor(conv_name)) {
         write_tensor_f32(
             "artifacts/" + sanitize_tensor_name(conv_name) + "_input_fp32.bin",
             x
@@ -483,11 +503,13 @@ Tensor conv_bn_relu_timed(
         const auto t0 = std::chrono::high_resolution_clock::now();
         conv_bn_relu(m, x, conv_name, bn_name, workspace, y);
         const auto t1 = std::chrono::high_resolution_clock::now();
-        timings.push_back({conv_name + "+" + bn_name + "+relu",
-            std::chrono::duration<double, std::milli>(t1 - t0).count()});
+        char name_buf[64];
+        std::snprintf(name_buf, sizeof(name_buf), "%s+%s+relu", conv_name.c_str(), bn_name.c_str());
+        timings.push_back(make_timing_entry(name_buf,
+            std::chrono::duration<double, std::milli>(t1 - t0).count()));
     }
 
-    if (should_dump_layer4_q8_tensor(conv_name)) {
+    if (should_dump_intermediate_tensor(conv_name)) {
         write_tensor_f32(
             "artifacts/" + sanitize_tensor_name(conv_name) + "_output_fp32.bin",
             y
@@ -504,7 +526,7 @@ Tensor conv_bn_timed(
     EngineWorkspace& workspace,
     std::vector<TimingEntry>& timings
 ) {
-    if (should_dump_layer4_q8_tensor(conv_name)) {
+    if (should_dump_intermediate_tensor(conv_name)) {
         write_tensor_f32(
             "artifacts/" + sanitize_tensor_name(conv_name) + "_input_fp32.bin",
             x
@@ -516,11 +538,13 @@ Tensor conv_bn_timed(
         const auto t0 = std::chrono::high_resolution_clock::now();
         conv_bn(m, x, conv_name, bn_name, workspace, y);
         const auto t1 = std::chrono::high_resolution_clock::now();
-        timings.push_back({conv_name + "+" + bn_name,
-            std::chrono::duration<double, std::milli>(t1 - t0).count()});
+        char name_buf[64];
+        std::snprintf(name_buf, sizeof(name_buf), "%s+%s", conv_name.c_str(), bn_name.c_str());
+        timings.push_back(make_timing_entry(name_buf,
+            std::chrono::duration<double, std::milli>(t1 - t0).count()));
     }
 
-    if (should_dump_layer4_q8_tensor(conv_name)) {
+    if (should_dump_intermediate_tensor(conv_name)) {
         write_tensor_f32(
             "artifacts/" + sanitize_tensor_name(conv_name) + "_output_fp32.bin",
             y
@@ -530,7 +554,9 @@ Tensor conv_bn_timed(
     return y;
 }
 Tensor add_relu_timed(const Tensor& a, const Tensor& b, const std::string& name, std::vector<TimingEntry>& timings) {
-    return timed_op(timings, name + "+add+relu", [&]() {
+    char label[64];
+    std::snprintf(label, sizeof(label), "%s+add+relu", name.c_str());
+    return timed_op(timings, label, [&]() {
         Tensor y = add_tensors(a, b);
         y = relu(y);
         return y;
@@ -562,36 +588,36 @@ Tensor basic_block_timed(const Model& m, const Tensor& x, const std::string& pre
 // Workspace-mirrored timed block: same buffer/swap pattern as basic_block_ws, no return-by-value.
 static void basic_block_ws_timed(
     const Model& m,
-    const std::string& prefix,
-    bool has_downsample,
+    const BasicBlockSpec& block,
     EngineWorkspace& ws,
     std::vector<TimingEntry>& timings
 ) {
-    auto time_op = [&](const std::string& name, auto fn) {
+    auto time_op = [&](const char* name, auto fn) {
         const auto t0 = std::chrono::high_resolution_clock::now();
         fn();
-        timings.push_back({name,
+        timings.push_back(make_timing_entry(name,
             std::chrono::duration<double, std::milli>(
-                std::chrono::high_resolution_clock::now() - t0).count()});
+                std::chrono::high_resolution_clock::now() - t0).count()));
     };
 
-    if (has_downsample) {
-        time_op(prefix + ".downsample.0", [&]() {
-            conv_bn(m, ws.buf_x, prefix + ".downsample.0",
-                    prefix + ".downsample.1", ws, ws.buf_identity);
+    if (block.has_downsample) {
+        time_op(block.downsample_conv, [&]() {
+            conv_bn(m, ws.buf_x, block.downsample_conv, block.downsample_bn, ws, ws.buf_identity);
         });
     }
 
-    time_op(prefix + ".conv1", [&]() {
-        conv_bn_relu(m, ws.buf_x, prefix + ".conv1", prefix + ".bn1", ws, ws.buf_a);
+    time_op(block.conv1, [&]() {
+        conv_bn_relu(m, ws.buf_x, block.conv1, block.bn1, ws, ws.buf_a);
     });
 
-    time_op(prefix + ".conv2", [&]() {
-        conv_bn(m, ws.buf_a, prefix + ".conv2", prefix + ".bn2", ws, ws.buf_b);
+    time_op(block.conv2, [&]() {
+        conv_bn(m, ws.buf_a, block.conv2, block.bn2, ws, ws.buf_b);
     });
 
-    const Tensor& identity = has_downsample ? ws.buf_identity : ws.buf_x;
-    time_op(prefix + ".add_relu", [&]() {
+    const Tensor& identity = block.has_downsample ? ws.buf_identity : ws.buf_x;
+    char add_relu_label[64];
+    std::snprintf(add_relu_label, sizeof(add_relu_label), "%s.add_relu", block.name);
+    time_op(add_relu_label, [&]() {
         add_inplace(ws.buf_b, identity);
         relu_inplace(ws.buf_b);
     });
@@ -605,20 +631,21 @@ Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWo
     conv_bn_relu(model, input, "conv1", "bn1", ws, ws.buf_a);
     maxpool2d_3x3_s2_p1_into(ws.buf_a, ws.buf_x);
 
-    basic_block_ws(model, "layer1.0", false, ws);
-    basic_block_ws(model, "layer1.1", false, ws);
+    basic_block_ws(model, kLayer1_0, ws);
+    basic_block_ws(model, kLayer1_1, ws);
 
-    basic_block_ws(model, "layer2.0", true, ws);
-    basic_block_ws(model, "layer2.1", false, ws);
+    basic_block_ws(model, kLayer2_0, ws);
+    basic_block_ws(model, kLayer2_1, ws);
 
-    basic_block_ws(model, "layer3.0", true, ws);
-    basic_block_ws(model, "layer3.1", false, ws);
+    basic_block_ws(model, kLayer3_0, ws);
+    basic_block_ws(model, kLayer3_1, ws);
 
-    basic_block_ws(model, "layer4.0", true, ws);
-    basic_block_ws(model, "layer4.1", false, ws);
+    basic_block_ws(model, kLayer4_0, ws);
+    basic_block_ws(model, kLayer4_1, ws);
 
-    Tensor x = adaptive_avgpool_1x1(ws.buf_x);
-    return linear(x, model.linears.at("fc"));
+    adaptive_avgpool_1x1_into(ws.buf_x, ws.buf_avgpool);
+    linear_into(ws.buf_avgpool, model.linears.at("fc"), ws.buf_fc);
+    return ws.buf_fc;
 }
 
 Tensor forward_resnet18_workspace_timed(
@@ -627,12 +654,12 @@ Tensor forward_resnet18_workspace_timed(
     EngineWorkspace& ws,
     std::vector<TimingEntry>& timings
 ) {
-    auto time_op = [&](const std::string& name, auto fn) {
+    auto time_op = [&](const char* name, auto fn) {
         const auto t0 = std::chrono::high_resolution_clock::now();
         fn();
-        timings.push_back({name,
+        timings.push_back(make_timing_entry(name,
             std::chrono::duration<double, std::milli>(
-                std::chrono::high_resolution_clock::now() - t0).count()});
+                std::chrono::high_resolution_clock::now() - t0).count()));
     };
 
     time_op("conv1+bn1+relu", [&]() {
@@ -642,23 +669,23 @@ Tensor forward_resnet18_workspace_timed(
         maxpool2d_3x3_s2_p1_into(ws.buf_a, ws.buf_x);
     });
 
-    basic_block_ws_timed(model, "layer1.0", false, ws, timings);
-    basic_block_ws_timed(model, "layer1.1", false, ws, timings);
-    basic_block_ws_timed(model, "layer2.0", true,  ws, timings);
-    basic_block_ws_timed(model, "layer2.1", false, ws, timings);
-    basic_block_ws_timed(model, "layer3.0", true,  ws, timings);
-    basic_block_ws_timed(model, "layer3.1", false, ws, timings);
-    basic_block_ws_timed(model, "layer4.0", true,  ws, timings);
-    basic_block_ws_timed(model, "layer4.1", false, ws, timings);
+    basic_block_ws_timed(model, kLayer1_0, ws, timings);
+    basic_block_ws_timed(model, kLayer1_1, ws, timings);
+    basic_block_ws_timed(model, kLayer2_0, ws, timings);
+    basic_block_ws_timed(model, kLayer2_1, ws, timings);
+    basic_block_ws_timed(model, kLayer3_0, ws, timings);
+    basic_block_ws_timed(model, kLayer3_1, ws, timings);
+    basic_block_ws_timed(model, kLayer4_0, ws, timings);
+    basic_block_ws_timed(model, kLayer4_1, ws, timings);
 
-    Tensor x = timed_op(timings, "avgpool", [&]() {
-        return adaptive_avgpool_1x1(ws.buf_x);
-    });
-    return timed_op(timings, "fc", [&]() {
-        return linear(x, model.linears.at("fc"));
-    });
+    time_op("avgpool", [&]() { adaptive_avgpool_1x1_into(ws.buf_x, ws.buf_avgpool); });
+    time_op("fc", [&]() { linear_into(ws.buf_avgpool, model.linears.at("fc"), ws.buf_fc); });
+    return ws.buf_fc;
 }
 
+// Legacy debug-only timing path.
+// Not used for reported benchmark numbers because it uses return-by-value Tensor temporaries.
+// Use forward_resnet18_workspace_timed for profiling the optimized workspace-backed engine.
 Tensor forward_resnet18_scalar_timed(
     const Model& model,
     const Tensor& input,

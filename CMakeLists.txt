@@ -34,6 +34,11 @@ target_include_directories(basic_engine PRIVATE
 
 target_compile_definitions(basic_engine PRIVATE NDEBUG)
 
+option(ENABLE_ALLOC_PROFILE "Track heap allocations per forward pass (basic_engine only)" OFF)
+if(ENABLE_ALLOC_PROFILE)
+    target_compile_definitions(basic_engine PRIVATE ENABLE_ALLOC_PROFILE)
+endif()
+
 target_compile_options(basic_engine PRIVATE
     -O3
     -march=native

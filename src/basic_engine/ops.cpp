@@ -240,6 +240,42 @@ Tensor linear(const Tensor& x, const LinearParams& fc) {
     return y;
 }
 
+void adaptive_avgpool_1x1_into(const Tensor& x, Tensor& y_out) {
+    y_out.reuse(x.c, 1, 1);
+
+    const float denom = static_cast<float>(x.h * x.w);
+
+    for (int c = 0; c < x.c; ++c) {
+        float sum = 0.0f;
+        for (int h = 0; h < x.h; ++h) {
+            for (int w = 0; w < x.w; ++w) {
+                sum += x(c, h, w);
+            }
+        }
+        y_out(c, 0, 0) = sum / denom;
+    }
+}
+
+void linear_into(const Tensor& x, const LinearParams& fc, Tensor& y_out) {
+    if (x.c * x.h * x.w != fc.in_features) {
+        throw std::runtime_error("Linear input size mismatch");
+    }
+
+    y_out.reuse(fc.out_features, 1, 1);
+
+    for (int o = 0; o < fc.out_features; ++o) {
+        float acc = 0.0f;
+        for (int i = 0; i < fc.in_features; ++i) {
+            acc += fc.weight[static_cast<size_t>(o * fc.in_features + i)] *
+                   x.data[static_cast<size_t>(i)];
+        }
+        if (fc.has_bias) {
+            acc += fc.bias[static_cast<size_t>(o)];
+        }
+        y_out(o, 0, 0) = acc;
+    }
+}
+
 // Padding sparse tensors
 Tensor pad_tensor(const Tensor& x, int pad_h, int pad_w) {
     Tensor y(x.c, x.h + 2 * pad_h, x.w + 2 * pad_w);

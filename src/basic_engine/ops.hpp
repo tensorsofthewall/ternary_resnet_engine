@@ -34,3 +34,5 @@ void pad_tensor_into(const Tensor& x, int pad_h, int pad_w, Tensor& y);
 void relu_inplace(Tensor& x);
 void add_inplace(Tensor& acc, const Tensor& b);
 void maxpool2d_3x3_s2_p1_into(const Tensor& x, Tensor& y_out);
+void adaptive_avgpool_1x1_into(const Tensor& x, Tensor& y_out);
+void linear_into(const Tensor& x, const LinearParams& fc, Tensor& y_out);

@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -8,6 +9,18 @@
 #include <algorithm>
 #include <chrono>
 #include <numeric>
+
+#ifdef ENABLE_ALLOC_PROFILE
+#include <atomic>
+static std::atomic<size_t> g_alloc_count{0};
+static std::atomic<size_t> g_alloc_bytes{0};
+void* operator new(size_t n)                      { g_alloc_count.fetch_add(1, std::memory_order_relaxed); g_alloc_bytes.fetch_add(n, std::memory_order_relaxed); return std::malloc(n); }
+void* operator new[](size_t n)                    { g_alloc_count.fetch_add(1, std::memory_order_relaxed); g_alloc_bytes.fetch_add(n, std::memory_order_relaxed); return std::malloc(n); }
+void  operator delete(void* p) noexcept           { std::free(p); }
+void  operator delete(void* p, size_t) noexcept   { std::free(p); }
+void  operator delete[](void* p) noexcept         { std::free(p); }
+void  operator delete[](void* p, size_t) noexcept { std::free(p); }
+#endif
 
 
 #include "model_loader.hpp"
@@ -91,6 +104,26 @@ int main(int argc, char** argv) {
         }
     }
 
+#ifdef ENABLE_ALLOC_PROFILE
+    {
+        g_alloc_count.store(0); g_alloc_bytes.store(0);
+        Tensor alloc_out = forward_resnet18_scalar(model, input, workspace);
+        (void)alloc_out;
+        std::cout << "Alloc profile: forward_resnet18_scalar\n";
+        std::cout << "  new_calls:       " << g_alloc_count.load() << "\n";
+        std::cout << "  bytes_allocated: " << g_alloc_bytes.load() << "\n";
+
+        std::vector<TimingEntry> alloc_timings;
+        alloc_timings.reserve(64);
+        g_alloc_count.store(0); g_alloc_bytes.store(0);
+        Tensor alloc_timed_out = forward_resnet18_workspace_timed(model, input, workspace, alloc_timings);
+        (void)alloc_timed_out;
+        std::cout << "Alloc profile: forward_resnet18_workspace_timed\n";
+        std::cout << "  new_calls:       " << g_alloc_count.load() << "\n";
+        std::cout << "  bytes_allocated: " << g_alloc_bytes.load() << "\n";
+    }
+#endif
+
     std::cout << "Benchmarking C++ ternary engine...\n";
 
     std::vector<double> times_ms;
@@ -128,7 +161,7 @@ int main(int argc, char** argv) {
     std::cout << "\nC++ engine per-block profile\n";
     for (const TimingEntry& entry : timings) {
         total_profiled_ms += entry.ms;
-        std::cout << "  " << entry.name << ": " << entry.ms << " ms\n";
+        std::cout << "  " << entry.name.data() << ": " << entry.ms << " ms\n";
     }
 
     std::vector<TimingEntry> sorted_timings = timings;
@@ -145,7 +178,7 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < std::min<size_t>(10, sorted_timings.size()); ++i) {
         std::cout
             << "  "
-            << sorted_timings[i].name
+            << sorted_timings[i].name.data()
             << ": "
             << sorted_timings[i].ms
             << " ms\n";
