@@ -26,6 +26,7 @@
 #include "workspace.hpp"
 #include "quantized/quant_utils.hpp"
 #include "quantized/conv3x3_q8_pattern_ocblock2_avx2.hpp"
+#include "quantized/packed_q8_3x3_kernel.hpp"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -183,6 +184,34 @@ static void run_dump_pass(
 }
 
 // ---------------------------------------------------------------------------
+// Packed kernel dispatch
+// ---------------------------------------------------------------------------
+
+static void run_packed_kernel_row(
+    const LayerSpec&          spec,
+    const PackedSparseQ8Plan& packed_plan,
+    const BNFusedParams&      bn,
+    const QuantTensorI8&      xq,
+    int8_t*                   A_panel,
+    int                       oh,
+    Tensor&                   y_out
+) {
+    if (spec.ic == 256) {
+        pack_a_panel_layer3(xq, oh, A_panel);
+        if (spec.has_relu)
+            packed_q8_3x3_s1_layer3_bn_relu_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
+        else
+            packed_q8_3x3_s1_layer3_bn_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
+    } else {
+        pack_a_panel_layer4(xq, oh, A_panel);
+        if (spec.has_relu)
+            packed_q8_3x3_s1_layer4_bn_relu_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
+        else
+            packed_q8_3x3_s1_layer4_bn_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Benchmark one layer
 // ---------------------------------------------------------------------------
 
@@ -197,9 +226,12 @@ static void benchmark_layer(
     const Tensor golden = load_tensor(
         output_path(spec), spec.oc, spec.oh, spec.ow);
 
-    const Conv2DParams&            conv     = model.convs.at(spec.conv_name);
-    const PatternOCBlock2ConvPlan& plan     = model.pattern_ocblock2_plans.at(spec.conv_name);
-    const BNFusedParams&           bn_fused = model.fused_bns.at(spec.bn_name);
+    const Conv2DParams&            conv        = model.convs.at(spec.conv_name);
+    const PatternOCBlock2ConvPlan& bucket_plan = model.pattern_ocblock2_plans.at(spec.conv_name);
+    const BNFusedParams&           bn_fused    = model.fused_bns.at(spec.bn_name);
+
+    // Build packed plan (one-time, outside timing)
+    const PackedSparseQ8Plan packed_plan = build_packed_sparse_q8_plan(conv);
 
     // Pre-allocate workspace buffers reused across timing iterations
     QuantTensorI8 xq;
@@ -208,64 +240,98 @@ static void benchmark_layer(
                            * static_cast<size_t>(spec.ow + 2 + spec.extra_right_pad);
     xq.data.reserve(padded_sz);
 
-    Tensor y_out(spec.oc, spec.oh, spec.ow);
+    Tensor y_bucket(spec.oc, spec.oh, spec.ow);
+    Tensor y_packed(spec.oc, spec.oh, spec.ow);
 
-    // Warmup
+    // A_panel buffer: K * N_PAD bytes, reused across all oh iterations
+    std::vector<int8_t> A_panel(static_cast<size_t>(packed_plan.K) * 16);
+
+    // Warmup — bucket
     for (int i = 0; i < 5; ++i) {
         quantize_pad_tensor_symmetric_i8_asymmetric_into(
             x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
             conv.pad_w + spec.extra_right_pad, xq);
-        run_bucket_kernel(spec, conv, plan, bn_fused, xq, y_out);
+        run_bucket_kernel(spec, conv, bucket_plan, bn_fused, xq, y_bucket);
     }
 
-    // Timed runs: measure quantize and compute separately
-    std::vector<double> q_times(n_runs), c_times(n_runs), t_times(n_runs);
+    // Warmup — packed
+    for (int i = 0; i < 5; ++i) {
+        quantize_pad_tensor_symmetric_i8_asymmetric_into(
+            x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
+            conv.pad_w + spec.extra_right_pad, xq);
+        for (int oh = 0; oh < spec.oh; ++oh)
+            run_packed_kernel_row(spec, packed_plan, bn_fused, xq, A_panel.data(), oh, y_packed);
+    }
 
+    // Timed runs — bucket
+    std::vector<double> bq_times(n_runs), bc_times(n_runs), bt_times(n_runs);
     for (int i = 0; i < n_runs; ++i) {
         const auto t0 = std::chrono::high_resolution_clock::now();
         quantize_pad_tensor_symmetric_i8_asymmetric_into(
             x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
             conv.pad_w + spec.extra_right_pad, xq);
         const auto t1 = std::chrono::high_resolution_clock::now();
-        run_bucket_kernel(spec, conv, plan, bn_fused, xq, y_out);
+        run_bucket_kernel(spec, conv, bucket_plan, bn_fused, xq, y_bucket);
         const auto t2 = std::chrono::high_resolution_clock::now();
-
-        q_times[i] = duration_ms(t0, t1);
-        c_times[i] = duration_ms(t1, t2);
-        t_times[i] = duration_ms(t0, t2);
+        bq_times[i] = duration_ms(t0, t1);
+        bc_times[i] = duration_ms(t1, t2);
+        bt_times[i] = duration_ms(t0, t2);
     }
 
-    const Stats qs = compute_stats(q_times);
-    const Stats cs = compute_stats(c_times);
-    const Stats ts = compute_stats(t_times);
+    // Timed runs — packed (quantize + interleaved pack+compute per oh)
+    std::vector<double> pq_times(n_runs), pc_times(n_runs), pt_times(n_runs);
+    for (int i = 0; i < n_runs; ++i) {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        quantize_pad_tensor_symmetric_i8_asymmetric_into(
+            x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
+            conv.pad_w + spec.extra_right_pad, xq);
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        for (int oh = 0; oh < spec.oh; ++oh)
+            run_packed_kernel_row(spec, packed_plan, bn_fused, xq, A_panel.data(), oh, y_packed);
+        const auto t2 = std::chrono::high_resolution_clock::now();
+        pq_times[i] = duration_ms(t0, t1);
+        pc_times[i] = duration_ms(t1, t2);
+        pt_times[i] = duration_ms(t0, t2);
+    }
 
-    const ErrorStats err = compute_error(y_out, golden);
+    const Stats bqs = compute_stats(bq_times);
+    const Stats bcs = compute_stats(bc_times);
+    const Stats bts = compute_stats(bt_times);
+    const Stats pqs = compute_stats(pq_times);
+    const Stats pcs = compute_stats(pc_times);
+    const Stats pts = compute_stats(pt_times);
+
+    const double speedup_total  = bts.min_ms / pts.min_ms;
+    const double speedup_compute = bcs.min_ms / pcs.min_ms;
+
+    const ErrorStats err_bucket = compute_error(y_bucket, golden);
 
     const int K = spec.ic * 9;
     const int N = spec.oh * spec.ow;
     const int M = spec.oc;
 
-    // Print
     std::cout << "\n--- " << spec.conv_name << " ---\n";
     std::cout << "  input:   " << spec.ic << " x " << spec.oh << " x " << spec.ow << "\n";
     std::cout << "  output:  " << spec.oc << " x " << spec.oh << " x " << spec.ow << "\n";
     std::cout << "  K=" << K << "  N=" << N << "  M=" << M << "\n";
-    std::cout << "\n  current bucket kernel (" << n_runs << " runs):\n";
-    std::cout << "    quantize:  min=" << qs.min_ms << " ms  median=" << qs.median_ms << " ms\n";
-    std::cout << "    compute:   min=" << cs.min_ms << " ms  median=" << cs.median_ms << " ms\n";
-    std::cout << "    total:     min=" << ts.min_ms << " ms  median=" << ts.median_ms << " ms\n";
 
-    std::cout << "\n  packed sparse kernel:\n";
-    std::cout << "    [not yet implemented — Phase 2]\n";
-    std::cout << "    packed_quantize_ms:  ---\n";
-    std::cout << "    packed_panel_ms:     ---\n";
-    std::cout << "    packed_compute_ms:   ---\n";
-    std::cout << "    packed_total_ms:     ---\n";
+    std::cout << "\n  current bucket kernel (" << n_runs << " runs):\n";
+    std::cout << "    quantize:  min=" << bqs.min_ms << " ms  median=" << bqs.median_ms << " ms\n";
+    std::cout << "    compute:   min=" << bcs.min_ms << " ms  median=" << bcs.median_ms << " ms\n";
+    std::cout << "    total:     min=" << bts.min_ms << " ms  median=" << bts.median_ms << " ms\n";
+
+    std::cout << "\n  packed sparse kernel (OC_TILE=1, N_TILE=" << spec.ow
+              << ", N_PAD=16):\n";
+    std::cout << "    quantize:  min=" << pqs.min_ms << " ms  median=" << pqs.median_ms << " ms\n";
+    std::cout << "    compute:   min=" << pcs.min_ms << " ms  median=" << pcs.median_ms << " ms\n";
+    std::cout << "    total:     min=" << pts.min_ms << " ms  median=" << pts.median_ms << " ms\n";
+    std::cout << "    speedup (compute): " << speedup_compute << "x\n";
+    std::cout << "    speedup (total):   " << speedup_total   << "x\n";
 
     std::cout << "\n  correctness (standalone bucket vs golden):\n";
-    std::cout << "    max_abs_error:          " << err.max_abs  << "\n";
-    std::cout << "    mean_abs_error:         " << err.mean_abs << "\n";
-    std::cout << "    relative_mean_abs_error " << err.rel_mean << "\n";
+    std::cout << "    max_abs_error:          " << err_bucket.max_abs  << "\n";
+    std::cout << "    mean_abs_error:         " << err_bucket.mean_abs << "\n";
+    std::cout << "    relative_mean_abs_error " << err_bucket.rel_mean << "\n";
 }
 
 // ---------------------------------------------------------------------------
