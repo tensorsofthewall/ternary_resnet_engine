@@ -102,6 +102,7 @@ This produces:
 build/basic_engine
 build/benchmark_layer4_q8
 build/benchmark_packed_3x3
+build/benchmark_gemm3x3
 ```
 
 The main executable is `build/basic_engine`.
@@ -631,6 +632,44 @@ bucket kernel's per-action input loads.
 activation-panel packing on this architecture and layout. Not integrated. Files retained in
 `quantized/` and `benchmark_packed_3x3.cpp` for reference.
 
+### Dense GEMM-style M_TILE=2 ternary kernel
+
+**Hypothesis**: a dense traversal of all K positions with M_TILE=2 output channels sharing
+one A_panel load per k would outperform the sparse per-OC index traversal by halving
+A_panel memory traffic. W_dense[OC][K] stores ternary weights as int8_t; inner loop
+branches on w0/w1 to add or subtract into 8 int32 accumulator vectors (4 per OC).
+
+**Design**: layer2.1.conv2 (IC=128, 28×28, K=1152). A_panel[k × N_PAD=32] = 36 KB,
+fits L1D. 12 YMM registers in flight; no spills on AVX2. Skip k positions where both
+w0 and w1 are zero (~18% of pairs).
+
+**Results** (1T, 100 runs, min_ms):
+
+| Kernel | Total min_ms | vs bucket |
+|---|---:|---:|
+| bucket (baseline) | 2.67 ms | 1.00× |
+| packed sparse OC_TILE=1 | 2.13 ms | 1.25× |
+| dense GEMM M_TILE=2 | 13.76 ms | **0.19×** |
+
+**Root cause**: the hot inner loop has unpredictable branches on every k position.
+Ternary weights are ~29% +1 / 29% −1 / 42% zero, so branch misprediction rate is near
+50%. At ~944 non-skipped iterations × 2 branch evaluations × ~18 cycle misprediction
+penalty per output row × 28 rows, misprediction stalls alone account for ~9 ms of the
+13.76 ms total.
+
+The sparse kernel avoids this entirely: it separates `pos_idx` and `neg_idx` lists so
+the hot accumulation loop is completely branch-free.
+
+Branchless alternatives (`sign_epi32`) were already tested in the OC_TILE=2/4 packed
+sparse experiment and also regressed (0.60×). No branchless ternary encoding exists in
+AVX2 that avoids this cost without a fundamentally different kernel structure.
+
+**Conclusion**: Dense ternary GEMM with per-k weight branching does not work on this
+architecture. The sparse branch-free design is the right approach for ternary weights in
+AVX2. Not integrated. Files retained in `benchmark_gemm3x3.cpp` for reference.
+
+---
+
 ### Naive conv1 OpenMP
 
 Parallelizing conv1 with naive output-channel threading regressed, especially at high thread
@@ -671,7 +710,10 @@ string/map dispatch artifacts from downsample layer name lookups.
 - **Still slower than ORT**: The current engine is about 2× slower than ORT INT8 at 1T and
   about 1.3× slower at 8T on this machine.
 - **No GEMM / packed-matrix path**: The largest remaining gap is kernel arithmetic intensity.
-  ORT's MLAS/GEMM kernels pack data and reuse it more effectively.
+  ORT's MLAS/GEMM kernels pack data and reuse it more effectively. A dense GEMM-style
+  M_TILE=2 experiment was conducted (`benchmark_gemm3x3`) and found to be 5× slower than
+  the bucket kernel due to branch misprediction on random ternary weights (see "What Did
+  Not Work").
 - **NCHW layout constraints**: NCHW works well for current OC-block writes but limits some
   spatial tiling strategies.
 - **Fixed input shape**: Kernels are specialized for the 224×224 ResNet-18 shape.
@@ -722,6 +764,8 @@ string/map dispatch artifacts from downsample layer name lookups.
 │   ├── conv3x3_pattern_ocblock4_avx2.cpp / .hpp
 │   ├── conv1_ocblock4_plan.cpp / .hpp
 │   ├── conv1_ocblock4_avx2.cpp / .hpp
+│   ├── benchmark_packed_3x3.cpp  (packed sparse activation-panel experiment)
+│   ├── benchmark_gemm3x3.cpp    (dense GEMM M_TILE=2 experiment; negative result)
 │   └── quantized/
 │       ├── quant_tensor.hpp
 │       ├── quant_utils.cpp / .hpp
@@ -742,11 +786,12 @@ string/map dispatch artifacts from downsample layer name lookups.
 The current code is at the point where small dispatch/allocation cleanups are unlikely to
 close the ORT gap. More meaningful future work would require a different kernel strategy:
 
-1. The packed activation-panel approach was attempted and closed (see "What Did Not Work").
-   A true GEMM-style kernel would need to pack both activations and weights into layouts with
-   high arithmetic intensity — im2col + SGEMM or a hand-rolled microkernel. The ternary
-   weight structure makes a standard im2col wasteful; a sparse microkernel with explicit
-   register blocking over output-channel and output-width tiles would be the next avenue.
+1. Both the packed activation-panel approach and a dense GEMM-style M_TILE=2 kernel were
+   attempted and closed (see "What Did Not Work"). The sparse branch-free design is the
+   performance ceiling for ternary weights with the current AVX2 toolkit. A meaningful next
+   step would require a fundamentally different representation — im2col + branchless ternary
+   dot product, or blocking over register tiles with explicit weight-sign encoding that avoids
+   per-k branches.
 2. Explore blocked layouts that preserve output locality while improving input reuse.
 3. Add an autotuning harness for tile sizes, OC block sizes, and OpenMP thresholds.
 4. Investigate a VNNI / AVX-512 path on hardware that supports it.
