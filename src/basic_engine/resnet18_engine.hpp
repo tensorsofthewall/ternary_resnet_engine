@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include "model.hpp"
 #include "tensor.hpp"
@@ -22,3 +23,9 @@ Tensor forward_resnet18_scalar_timed(
     EngineWorkspace& workspace,
     std::vector<TimingEntry>& timings
 );
+
+// Dump control for standalone layer benchmarks.
+// Enable before a single-threaded diagnostic forward pass; disable immediately after.
+// Not thread-safe.
+void set_tensor_dump_layers(const std::vector<std::string>& layer_names);
+void clear_tensor_dump_layers();

@@ -13,6 +13,7 @@
 #include "quantized/conv1x1_q8_s2_avx2.hpp"
 
 #include <stdexcept>
+#include <unordered_set>
 
 // Helper for intermediate capture for layer4.0.conv2
 #include <fstream>
@@ -31,15 +32,13 @@ void write_tensor_f32(const std::string& path, const Tensor& x) {
         throw std::runtime_error("Failed to write tensor dump file: " + path);
     }
 }
-constexpr bool enable_tensor_dumps = false;
+// Runtime dump control — set via set_tensor_dump_layers / clear_tensor_dump_layers.
+// Not thread-safe; only call from the benchmark binary with a single forward pass.
+static bool g_tensor_dump_enabled = false;
+static std::unordered_set<std::string> g_tensor_dump_layers;
 
-// Optional debug helper for dumping intermediate tensors used by standalone kernel benchmarks.
 bool should_dump_intermediate_tensor(const std::string& name) {
-    if constexpr (!enable_tensor_dumps) {
-        return false;
-    }
-
-    return name == "layer3.0.conv1";
+    return g_tensor_dump_enabled && g_tensor_dump_layers.count(name) > 0;
 }
 std::string sanitize_tensor_name(std::string name) {
     for (char& c : name) {
@@ -726,4 +725,17 @@ Tensor forward_resnet18_scalar_timed(
     });
 
     return x;
+}
+
+void set_tensor_dump_layers(const std::vector<std::string>& layer_names) {
+    g_tensor_dump_layers.clear();
+    for (const auto& name : layer_names) {
+        g_tensor_dump_layers.insert(name);
+    }
+    g_tensor_dump_enabled = !g_tensor_dump_layers.empty();
+}
+
+void clear_tensor_dump_layers() {
+    g_tensor_dump_enabled = false;
+    g_tensor_dump_layers.clear();
 }
