@@ -276,6 +276,25 @@ void linear_into(const Tensor& x, const LinearParams& fc, Tensor& y_out) {
     }
 }
 
+void softmax_into(const Tensor& x, Tensor& y_out) {
+    const int n = x.c * x.h * x.w;
+    y_out.reuse(x.c, x.h, x.w);
+
+    const float* src = x.data.data();
+    float* dst = y_out.data.data();
+
+    float max_val = *std::max_element(src, src + n);
+    float sum = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        dst[i] = std::exp(src[i] - max_val);
+        sum += dst[i];
+    }
+    const float inv_sum = 1.0f / sum;
+    for (int i = 0; i < n; ++i) {
+        dst[i] *= inv_sum;
+    }
+}
+
 // Padding sparse tensors
 Tensor pad_tensor(const Tensor& x, int pad_h, int pad_w) {
     Tensor y(x.c, x.h + 2 * pad_h, x.w + 2 * pad_w);

@@ -10,6 +10,9 @@
 
 Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWorkspace& workspace);
 
+// Returns softmax probabilities over the 1000-class output.
+Tensor forward_resnet18_softmax(const Model& model, const Tensor& input, EngineWorkspace& workspace);
+
 Tensor forward_resnet18_workspace_timed(
     const Model& model,
     const Tensor& input,

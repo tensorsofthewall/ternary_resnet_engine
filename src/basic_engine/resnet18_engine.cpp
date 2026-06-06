@@ -647,6 +647,12 @@ Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWo
     return ws.buf_fc;
 }
 
+Tensor forward_resnet18_softmax(const Model& model, const Tensor& input, EngineWorkspace& ws) {
+    const Tensor& logits = forward_resnet18_scalar(model, input, ws);
+    softmax_into(logits, ws.buf_softmax);
+    return ws.buf_softmax;
+}
+
 Tensor forward_resnet18_workspace_timed(
     const Model& model,
     const Tensor& input,

@@ -18,6 +18,7 @@ struct EngineWorkspace {
 
     Tensor buf_avgpool;   // adaptive_avgpool_1x1 output (512x1x1)
     Tensor buf_fc;        // linear (fc) output (1000x1x1)
+    Tensor buf_softmax;   // softmax output (1000x1x1)
 
     EngineWorkspace() { reserve_max(); }
 
@@ -44,5 +45,6 @@ struct EngineWorkspace {
 
         buf_avgpool.reserve(512, 1, 1);
         buf_fc.reserve(1000, 1, 1);
+        buf_softmax.reserve(1000, 1, 1);
     }
 };
