@@ -201,3 +201,39 @@ target_link_libraries(benchmark_layer4_q8 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_packed_3x3 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_gemm3x3 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_nchwc PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Blocked engine: NCHWc16 activations + mullo_epi32 ternary conv prototype.
+# Separate from basic_engine — shares model loader and plan builders only.
+# Phase 1: types + weight reorganization (compile test).
+# ---------------------------------------------------------------------------
+add_executable(blocked_engine
+    src/blocked_engine/blocked_engine_main.cpp
+    src/blocked_engine/blocked_model.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+
+target_include_directories(blocked_engine PRIVATE
+    src/blocked_engine
+    src/basic_engine
+)
+
+target_compile_definitions(blocked_engine PRIVATE NDEBUG)
+
+target_compile_options(blocked_engine PRIVATE
+    -O3
+    -march=native
+    -Wall
+    -Wextra
+    -Wpedantic
+    -mavx2
+    -mfma
+)
+
+target_link_libraries(blocked_engine PRIVATE OpenMP::OpenMP_CXX)
