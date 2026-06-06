@@ -10,6 +10,7 @@
 #include "quantized/quant_utils.hpp"
 #include "quantized/conv3x3_q8_pattern_ocblock4_avx2.hpp"
 #include "quantized/conv3x3_q8_pattern_ocblock2_avx2.hpp"
+#include "quantized/conv1x1_q8_s2_avx2.hpp"
 
 #include <stdexcept>
 
@@ -127,7 +128,6 @@ void conv_bn_relu(const Model& m, const Tensor& x, const std::string& conv_name,
     constexpr bool enable_q8_ocblock2_layer2_s2_kernel = true;
     constexpr bool enable_q8_ocblock2_layer3_s1_kernel = true;
     constexpr bool enable_q8_ocblock2_layer4_s1_kernel = true;
-
     if (enable_q8_ocblock2_layer4_s1_kernel &&
         can_use_q8_ocblock2_spatial4_layer4_s1_3x3_avx2(conv)) {
         const PatternOCBlock2ConvPlan& q8_plan = m.pattern_ocblock2_plans.at(conv_name);
@@ -309,7 +309,6 @@ void conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, cons
     constexpr bool enable_q8_ocblock2_layer2_s2_kernel = true;
     constexpr bool enable_q8_ocblock2_layer3_s1_kernel = true;
     constexpr bool enable_q8_ocblock2_layer4_s1_kernel = true;
-
     if (enable_q8_ocblock2_layer4_s1_kernel &&
         can_use_q8_ocblock2_spatial4_layer4_s1_3x3_avx2(conv)) {
         const PatternOCBlock2ConvPlan& q8_plan = m.pattern_ocblock2_plans.at(conv_name);
@@ -422,6 +421,17 @@ void conv_bn(const Model& m, const Tensor& x, const std::string& conv_name, cons
 
     if (enable_ocblock_kernel && can_use_sparse_ocblock4_3x3s1_avx2(conv)) {
         conv3x3s1_sparse_ocblock4_bn_avx2(x, conv, m.sparse_ocblock4_plans.at(conv_name), bn_fused, workspace, y_out);
+        return;
+    }
+
+    if (can_use_q8_1x1_s2_avx2(conv)) {
+        const PatternOCBlock2ConvPlan& q8_plan = m.pattern_ocblock2_plans.at(conv_name);
+        constexpr int extra_right_pad = 8;
+        const int out_h = x.h / conv.stride_h;
+        const int out_w = x.w / conv.stride_w;
+        QuantTensorI8& xq = quantize_pad_tensor_symmetric_i8_asymmetric_into(
+            x, 0, 0, 0, extra_right_pad, workspace.q8_padded_input);
+        conv1x1_q8_s2_bn_avx2(xq, conv, q8_plan, bn_fused, out_h, out_w, y_out);
         return;
     }
 

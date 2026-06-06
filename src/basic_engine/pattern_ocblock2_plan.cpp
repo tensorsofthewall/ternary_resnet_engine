@@ -20,8 +20,9 @@ size_t weight_index(
 }
 
 bool supports_pattern_ocblock2_plan(const Conv2DParams& conv) {
-    return conv.kh == 3 &&
-           conv.kw == 3 &&
+    const bool valid_kernel = (conv.kh == 3 && conv.kw == 3) ||
+                              (conv.kh == 1 && conv.kw == 1);
+    return valid_kernel &&
            conv.stride_h == conv.stride_w &&
            (conv.stride_h == 1 || conv.stride_h == 2) &&
            conv.dilation_h == 1 &&

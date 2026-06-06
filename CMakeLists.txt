@@ -25,6 +25,7 @@ add_executable(basic_engine
     src/basic_engine/quantized/quant_utils.cpp
     src/basic_engine/quantized/conv3x3_q8_pattern_ocblock4_avx2.cpp
     src/basic_engine/quantized/conv3x3_q8_pattern_ocblock2_avx2.cpp
+    src/basic_engine/quantized/conv1x1_q8_s2_avx2.cpp
 )
 
 target_include_directories(basic_engine PRIVATE
