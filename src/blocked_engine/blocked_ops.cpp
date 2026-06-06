@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 void blocked_maxpool_3x3_s2(const BlockedTensorFP32& input, BlockedTensorFP32& output) {
