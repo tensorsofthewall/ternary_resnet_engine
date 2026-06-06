@@ -87,6 +87,8 @@ struct LayerSpec {
 };
 
 static const LayerSpec LAYERS[] = {
+    // layer2 final bounded test (IC=128, spatial 28x28, N_TILE=28, N_PAD=32)
+    {"layer2.1.conv2", "layer2.1.bn2", false, 4, 128, 128, 28, 28},
     // layer3 stride-1 (IC=256, spatial 14x14)
     {"layer3.1.conv2", "layer3.1.bn2", false, 4, 256, 256, 14, 14},
     {"layer3.0.conv2", "layer3.0.bn2", false, 4, 256, 256, 14, 14},
@@ -110,7 +112,12 @@ static void run_bucket_kernel(
     const QuantTensorI8&          xq,
     Tensor&                       y_out
 ) {
-    if (spec.ic == 256) {
+    if (spec.ic == 128) {
+        if (spec.has_relu)
+            conv3x3_q8_ocblock2_spatial4_layer2_s1_bn_relu_avx2(xq, conv, plan, bn_fused, y_out);
+        else
+            conv3x3_q8_ocblock2_spatial4_layer2_s1_bn_avx2(xq, conv, plan, bn_fused, y_out);
+    } else if (spec.ic == 256) {
         if (spec.has_relu)
             conv3x3_q8_ocblock2_spatial4_layer3_s1_bn_relu_avx2(xq, conv, plan, bn_fused, y_out);
         else
@@ -196,7 +203,13 @@ static void run_packed_kernel_row(
     int                       oh,
     Tensor&                   y_out
 ) {
-    if (spec.ic == 256) {
+    if (spec.ic == 128) {
+        pack_a_panel_layer2(xq, oh, A_panel);
+        if (spec.has_relu)
+            packed_q8_3x3_s1_layer2_bn_relu_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
+        else
+            packed_q8_3x3_s1_layer2_bn_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
+    } else if (spec.ic == 256) {
         pack_a_panel_layer3(xq, oh, A_panel);
         if (spec.has_relu)
             packed_q8_3x3_s1_layer3_bn_relu_avx2(A_panel, packed_plan, bn, xq.scale, oh, y_out);
@@ -212,121 +225,187 @@ static void run_packed_kernel_row(
 }
 
 // ---------------------------------------------------------------------------
+// Generic timed-compute helper: quantize once, then run a per-oh functor
+// ---------------------------------------------------------------------------
+
+template <typename Fn>
+static void timed_runs(
+    const Tensor&       x_fp32,
+    const Conv2DParams& conv,
+    int                 extra_right_pad,
+    QuantTensorI8&      xq,
+    int                 oh_count,
+    int                 n_runs,
+    Fn                  per_oh_fn,
+    std::vector<double>& q_out,
+    std::vector<double>& c_out,
+    std::vector<double>& t_out)
+{
+    for (int i = 0; i < n_runs; ++i) {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        quantize_pad_tensor_symmetric_i8_asymmetric_into(
+            x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
+            conv.pad_w + extra_right_pad, xq);
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        for (int oh = 0; oh < oh_count; ++oh)
+            per_oh_fn(oh);
+        const auto t2 = std::chrono::high_resolution_clock::now();
+        q_out[i] = duration_ms(t0, t1);
+        c_out[i] = duration_ms(t1, t2);
+        t_out[i] = duration_ms(t0, t2);
+    }
+}
+
+static void print_kernel_stats(
+    const std::string& label,
+    const Stats& qs,
+    const Stats& cs,
+    const Stats& ts,
+    double       bucket_compute_min,
+    double       bucket_total_min)
+{
+    std::cout << "\n  " << label << ":\n";
+    std::cout << "    quantize:  min=" << qs.min_ms << " ms  median=" << qs.median_ms << " ms\n";
+    std::cout << "    compute:   min=" << cs.min_ms << " ms  median=" << cs.median_ms << " ms\n";
+    std::cout << "    total:     min=" << ts.min_ms << " ms  median=" << ts.median_ms << " ms\n";
+    std::cout << "    speedup (compute): " << bucket_compute_min / cs.min_ms << "x\n";
+    std::cout << "    speedup (total):   " << bucket_total_min   / ts.min_ms << "x\n";
+}
+
+// ---------------------------------------------------------------------------
 // Benchmark one layer
 // ---------------------------------------------------------------------------
 
 static void benchmark_layer(
-    const Model&    model,
+    const Model&     model,
     const LayerSpec& spec,
-    int             n_runs
+    int              n_runs
 ) {
-    // Load captured FP32 input and bucket-kernel golden output
-    const Tensor x_fp32 = load_tensor(
-        input_path(spec), spec.ic, spec.oh, spec.ow);
-    const Tensor golden = load_tensor(
-        output_path(spec), spec.oc, spec.oh, spec.ow);
+    const Tensor x_fp32 = load_tensor(input_path(spec),  spec.ic, spec.oh, spec.ow);
+    const Tensor golden = load_tensor(output_path(spec), spec.oc, spec.oh, spec.ow);
 
     const Conv2DParams&            conv        = model.convs.at(spec.conv_name);
     const PatternOCBlock2ConvPlan& bucket_plan = model.pattern_ocblock2_plans.at(spec.conv_name);
-    const BNFusedParams&           bn_fused    = model.fused_bns.at(spec.bn_name);
+    const BNFusedParams&           bn          = model.fused_bns.at(spec.bn_name);
 
-    // Build packed plan (one-time, outside timing)
-    const PackedSparseQ8Plan packed_plan = build_packed_sparse_q8_plan(conv);
+    // All plans built outside timing
+    const PackedSparseQ8Plan   p1_plan  = build_packed_sparse_q8_plan(conv);
+    const bool                 is_l3    = (spec.ic == 256);
+    const PackedSparsePairPlan p2_plan  = is_l3 ? build_packed_sparse_pair_plan(conv)
+                                                 : PackedSparsePairPlan{};
+    const PackedSparseQuadPlan p4_plan  = is_l3 ? build_packed_sparse_quad_plan(conv)
+                                                 : PackedSparseQuadPlan{};
 
-    // Pre-allocate workspace buffers reused across timing iterations
     QuantTensorI8 xq;
-    const size_t padded_sz = static_cast<size_t>(spec.ic)
-                           * static_cast<size_t>(spec.oh + 2)
-                           * static_cast<size_t>(spec.ow + 2 + spec.extra_right_pad);
-    xq.data.reserve(padded_sz);
+    xq.data.reserve(static_cast<size_t>(spec.ic)
+                  * static_cast<size_t>(spec.oh + 2)
+                  * static_cast<size_t>(spec.ow + 2 + spec.extra_right_pad));
 
     Tensor y_bucket(spec.oc, spec.oh, spec.ow);
-    Tensor y_packed(spec.oc, spec.oh, spec.ow);
+    Tensor y_p1(spec.oc, spec.oh, spec.ow);
+    Tensor y_p2(spec.oc, spec.oh, spec.ow);
+    Tensor y_p4(spec.oc, spec.oh, spec.ow);
 
-    // A_panel buffer: K * N_PAD bytes, reused across all oh iterations
-    std::vector<int8_t> A_panel(static_cast<size_t>(packed_plan.K) * 16);
+    // N_PAD=32 for layer2 (N_TILE=28), N_PAD=16 for layer3/4.
+    const int n_pad = (spec.ic == 128) ? 32 : 16;
+    std::vector<int8_t> A_panel(static_cast<size_t>(p1_plan.K) * n_pad);
 
-    // Warmup — bucket
+    // --- Warmup ---
     for (int i = 0; i < 5; ++i) {
         quantize_pad_tensor_symmetric_i8_asymmetric_into(
             x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
             conv.pad_w + spec.extra_right_pad, xq);
-        run_bucket_kernel(spec, conv, bucket_plan, bn_fused, xq, y_bucket);
-    }
-
-    // Warmup — packed
-    for (int i = 0; i < 5; ++i) {
-        quantize_pad_tensor_symmetric_i8_asymmetric_into(
-            x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
-            conv.pad_w + spec.extra_right_pad, xq);
+        run_bucket_kernel(spec, conv, bucket_plan, bn, xq, y_bucket);
         for (int oh = 0; oh < spec.oh; ++oh)
-            run_packed_kernel_row(spec, packed_plan, bn_fused, xq, A_panel.data(), oh, y_packed);
+            run_packed_kernel_row(spec, p1_plan, bn, xq, A_panel.data(), oh, y_p1);
+        if (is_l3) {
+            for (int oh = 0; oh < spec.oh; ++oh) {
+                pack_a_panel_layer3(xq, oh, A_panel.data());
+                if (spec.has_relu)
+                    packed_q8_3x3_s1_layer3_oc2_bn_relu_avx2(A_panel.data(), p2_plan, bn, xq.scale, oh, y_p2);
+                else
+                    packed_q8_3x3_s1_layer3_oc2_bn_avx2(A_panel.data(), p2_plan, bn, xq.scale, oh, y_p2);
+            }
+            for (int oh = 0; oh < spec.oh; ++oh) {
+                pack_a_panel_layer3(xq, oh, A_panel.data());
+                if (spec.has_relu)
+                    packed_q8_3x3_s1_layer3_oc4_bn_relu_avx2(A_panel.data(), p4_plan, bn, xq.scale, oh, y_p4);
+                else
+                    packed_q8_3x3_s1_layer3_oc4_bn_avx2(A_panel.data(), p4_plan, bn, xq.scale, oh, y_p4);
+            }
+        }
     }
 
-    // Timed runs — bucket
-    std::vector<double> bq_times(n_runs), bc_times(n_runs), bt_times(n_runs);
-    for (int i = 0; i < n_runs; ++i) {
-        const auto t0 = std::chrono::high_resolution_clock::now();
-        quantize_pad_tensor_symmetric_i8_asymmetric_into(
-            x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
-            conv.pad_w + spec.extra_right_pad, xq);
-        const auto t1 = std::chrono::high_resolution_clock::now();
-        run_bucket_kernel(spec, conv, bucket_plan, bn_fused, xq, y_bucket);
-        const auto t2 = std::chrono::high_resolution_clock::now();
-        bq_times[i] = duration_ms(t0, t1);
-        bc_times[i] = duration_ms(t1, t2);
-        bt_times[i] = duration_ms(t0, t2);
+    // --- Timed runs ---
+    std::vector<double> bq(n_runs), bc(n_runs), bt(n_runs);
+    std::vector<double> q1(n_runs), c1(n_runs), t1(n_runs);
+    std::vector<double> q2(n_runs), c2(n_runs), t2v(n_runs);
+    std::vector<double> q4(n_runs), c4(n_runs), t4(n_runs);
+
+    // Bucket kernel processes all OH rows in one call — pass oh_count=1
+    timed_runs(x_fp32, conv, spec.extra_right_pad, xq, 1, n_runs,
+        [&](int) { run_bucket_kernel(spec, conv, bucket_plan, bn, xq, y_bucket); },
+        bq, bc, bt);
+
+    timed_runs(x_fp32, conv, spec.extra_right_pad, xq, spec.oh, n_runs,
+        [&](int oh) { run_packed_kernel_row(spec, p1_plan, bn, xq, A_panel.data(), oh, y_p1); },
+        q1, c1, t1);
+
+    if (is_l3) {
+        timed_runs(x_fp32, conv, spec.extra_right_pad, xq, spec.oh, n_runs,
+            [&](int oh) {
+                pack_a_panel_layer3(xq, oh, A_panel.data());
+                if (spec.has_relu)
+                    packed_q8_3x3_s1_layer3_oc2_bn_relu_avx2(A_panel.data(), p2_plan, bn, xq.scale, oh, y_p2);
+                else
+                    packed_q8_3x3_s1_layer3_oc2_bn_avx2(A_panel.data(), p2_plan, bn, xq.scale, oh, y_p2);
+            },
+            q2, c2, t2v);
+
+        timed_runs(x_fp32, conv, spec.extra_right_pad, xq, spec.oh, n_runs,
+            [&](int oh) {
+                pack_a_panel_layer3(xq, oh, A_panel.data());
+                if (spec.has_relu)
+                    packed_q8_3x3_s1_layer3_oc4_bn_relu_avx2(A_panel.data(), p4_plan, bn, xq.scale, oh, y_p4);
+                else
+                    packed_q8_3x3_s1_layer3_oc4_bn_avx2(A_panel.data(), p4_plan, bn, xq.scale, oh, y_p4);
+            },
+            q4, c4, t4);
     }
 
-    // Timed runs — packed (quantize + interleaved pack+compute per oh)
-    std::vector<double> pq_times(n_runs), pc_times(n_runs), pt_times(n_runs);
-    for (int i = 0; i < n_runs; ++i) {
-        const auto t0 = std::chrono::high_resolution_clock::now();
-        quantize_pad_tensor_symmetric_i8_asymmetric_into(
-            x_fp32, conv.pad_h, conv.pad_h, conv.pad_w,
-            conv.pad_w + spec.extra_right_pad, xq);
-        const auto t1 = std::chrono::high_resolution_clock::now();
-        for (int oh = 0; oh < spec.oh; ++oh)
-            run_packed_kernel_row(spec, packed_plan, bn_fused, xq, A_panel.data(), oh, y_packed);
-        const auto t2 = std::chrono::high_resolution_clock::now();
-        pq_times[i] = duration_ms(t0, t1);
-        pc_times[i] = duration_ms(t1, t2);
-        pt_times[i] = duration_ms(t0, t2);
-    }
-
-    const Stats bqs = compute_stats(bq_times);
-    const Stats bcs = compute_stats(bc_times);
-    const Stats bts = compute_stats(bt_times);
-    const Stats pqs = compute_stats(pq_times);
-    const Stats pcs = compute_stats(pc_times);
-    const Stats pts = compute_stats(pt_times);
-
-    const double speedup_total  = bts.min_ms / pts.min_ms;
-    const double speedup_compute = bcs.min_ms / pcs.min_ms;
+    const Stats bqs = compute_stats(bq);
+    const Stats bcs = compute_stats(bc);
+    const Stats bts = compute_stats(bt);
 
     const ErrorStats err_bucket = compute_error(y_bucket, golden);
 
-    const int K = spec.ic * 9;
-    const int N = spec.oh * spec.ow;
-    const int M = spec.oc;
-
     std::cout << "\n--- " << spec.conv_name << " ---\n";
-    std::cout << "  input:   " << spec.ic << " x " << spec.oh << " x " << spec.ow << "\n";
-    std::cout << "  output:  " << spec.oc << " x " << spec.oh << " x " << spec.ow << "\n";
-    std::cout << "  K=" << K << "  N=" << N << "  M=" << M << "\n";
+    std::cout << "  input:   " << spec.ic << " x " << spec.oh << " x " << spec.ow
+              << "   K=" << spec.ic * 9 << "  N=" << spec.oh * spec.ow
+              << "  M=" << spec.oc << "\n";
 
-    std::cout << "\n  current bucket kernel (" << n_runs << " runs):\n";
+    std::cout << "\n  bucket kernel (" << n_runs << " runs):\n";
     std::cout << "    quantize:  min=" << bqs.min_ms << " ms  median=" << bqs.median_ms << " ms\n";
     std::cout << "    compute:   min=" << bcs.min_ms << " ms  median=" << bcs.median_ms << " ms\n";
     std::cout << "    total:     min=" << bts.min_ms << " ms  median=" << bts.median_ms << " ms\n";
 
-    std::cout << "\n  packed sparse kernel (OC_TILE=1, N_TILE=" << spec.ow
-              << ", N_PAD=16):\n";
-    std::cout << "    quantize:  min=" << pqs.min_ms << " ms  median=" << pqs.median_ms << " ms\n";
-    std::cout << "    compute:   min=" << pcs.min_ms << " ms  median=" << pcs.median_ms << " ms\n";
-    std::cout << "    total:     min=" << pts.min_ms << " ms  median=" << pts.median_ms << " ms\n";
-    std::cout << "    speedup (compute): " << speedup_compute << "x\n";
-    std::cout << "    speedup (total):   " << speedup_total   << "x\n";
+    print_kernel_stats("packed OC_TILE=1 (N_TILE=" + std::to_string(spec.ow) + ")",
+        compute_stats(q1), compute_stats(c1), compute_stats(t1),
+        bcs.min_ms, bts.min_ms);
+
+    if (is_l3) {
+        print_kernel_stats("packed OC_TILE=2 merged (sign_epi32)",
+            compute_stats(q2), compute_stats(c2), compute_stats(t2v),
+            bcs.min_ms, bts.min_ms);
+
+        print_kernel_stats("packed OC_TILE=4 merged (sign_epi32)",
+            compute_stats(q4), compute_stats(c4), compute_stats(t4),
+            bcs.min_ms, bts.min_ms);
+    } else if (spec.ic == 128) {
+        std::cout << "\n  packed OC_TILE=2/4: not tested (layer2 final test, OC_TILE=1 only)\n";
+    } else {
+        std::cout << "\n  packed OC_TILE=2/4: skipped (layer4 ruled out in Phase 2)\n";
+    }
 
     std::cout << "\n  correctness (standalone bucket vs golden):\n";
     std::cout << "    max_abs_error:          " << err_bucket.max_abs  << "\n";

@@ -76,6 +76,7 @@ This produces:
 ```text
 build/basic_engine
 build/benchmark_layer4_q8
+build/benchmark_packed_3x3
 ```
 
 The main executable is `build/basic_engine`.
@@ -513,6 +514,49 @@ Replacing runtime branch checks with compile-time pattern dispatch did not produ
 measurable speedup. The bottleneck appeared to be memory bandwidth / access pattern rather
 than branch misprediction.
 
+### Packed sparse activation-panel kernel (all layers, OC_TILE=1/2/4)
+
+**Hypothesis**: pre-pack A_panel[K × N_PAD] of quantized int8 activations for N_TILE output
+columns; each k position is loaded once and reused across all OC. Sparse per-OC pos/neg
+index lists skip zero-weight positions. This should reduce total SIMD loads compared to the
+bucket kernel's per-action input loads.
+
+**Implementation**:
+
+- `PackedSparseQ8Plan`: pos_idx[oc] / neg_idx[oc] vectors of uint16_t K-indices; built once
+  at model load.
+- Per-OH-row: quantize input → `pack_a_panel_layerN` copies N_TILE i8 values per K position
+  into a contiguous panel; then inner kernel accumulates with `_mm256_cvtepi8_epi32` + add/sub.
+- Layer2: N_TILE=28, N_PAD=32, A_panel = 1152 × 32 = 36 KB (fits L1)
+- Layer3: N_TILE=14, N_PAD=16, A_panel = 2304 × 16 = 36 KB (fits L1)
+- Layer4: N_TILE=7, N_PAD=16, A_panel = 4608 × 16 = 72 KB (exceeds L1)
+- OC_TILE=2/4 variants used merged action lists + `_mm256_sign_epi32` for branch-free
+  multi-OC accumulation.
+
+**Results** (i7-12800HX, AVX2, 1T, 100 runs, min_ms):
+
+| Layer | Bucket compute | Packed OC_TILE=1 | Speedup | Threshold |
+|---|---|---|---|---|
+| layer2.1.conv2 (IC=128, 28×28) | 2.50 ms | 1.97 ms | **1.27×** | ≥1.7× |
+| layer3 (IC=256, 14×14) | ~2.52 ms | ~2.01 ms | **~1.25×** | ≥2.0× |
+| layer4 (IC=512, 7×7) | ~1.78 ms | ~2.94 ms | **~0.60×** | ≥2.5× |
+| layer3 OC_TILE=2 (sign_epi32) | ~2.52 ms | ~4.27 ms | **~0.60×** | >OC_TILE=1 |
+| layer3 OC_TILE=4 (sign_epi32) | ~2.52 ms | ~4.47 ms | **~0.57×** | >OC_TILE=1 |
+
+**Root causes**:
+
+- *Layer4*: 72 KB panel exceeds L1 (48 KB); every k access is an L2 miss.
+- *Layer3/layer2*: The bucket kernel's pattern-based grouping skips ~42% of k positions
+  entirely (zero-weight patterns). The packed panel must visit every nonzero-weight k
+  individually. The ~30% load reduction from panel reuse does not recover the lost
+  pattern-sparsity benefit.
+- *OC_TILE=2/4*: `sign_epi32` costs ~2 µops and is called 4×/8× per k for two/four OCs.
+  Total µop count doubles vs OC_TILE=1 despite ~29% fewer k iterations from merging.
+
+**Conclusion**: The Q8 OCBlock2 bucket kernel's pattern-sparsity exploitation outperforms
+activation-panel packing on this architecture and layout. Not integrated. Files retained in
+`quantized/` and `benchmark_packed_3x3.cpp` for reference.
+
 ### Naive conv1 OpenMP
 
 Parallelizing conv1 with naive output-channel threading regressed, especially at high thread
@@ -577,7 +621,8 @@ counts. Conv1 remains single-threaded / specially handled rather than blindly pa
 │       ├── quant_utils.cpp / .hpp
 │       ├── conv3x3_q8_pattern_ocblock2_avx2.cpp / .hpp
 │       ├── conv3x3_q8_pattern_ocblock4_avx2.cpp / .hpp
-│       └── conv1x1_q8_s2_avx2.cpp / .hpp
+│       ├── conv1x1_q8_s2_avx2.cpp / .hpp
+│       └── packed_q8_3x3_kernel.cpp / .hpp  (experimental; not wired into engine)
 ├── artifacts/
 │   └── generated model/input/reference files
 └── logs/
@@ -591,7 +636,11 @@ counts. Conv1 remains single-threaded / specially handled rather than blindly pa
 The current code is at the point where small dispatch/allocation cleanups are unlikely to
 close the ORT gap. More meaningful future work would require a different kernel strategy:
 
-1. Prototype a GEMM-like / packed-layout 3×3 kernel for one representative layer.
+1. The packed activation-panel approach was attempted and closed (see "What Did Not Work").
+   A true GEMM-style kernel would need to pack both activations and weights into layouts with
+   high arithmetic intensity — im2col + SGEMM or a hand-rolled microkernel. The ternary
+   weight structure makes a standard im2col wasteful; a sparse microkernel with explicit
+   register blocking over output-channel and output-width tiles would be the next avenue.
 2. Explore blocked layouts that preserve output locality while improving input reuse.
 3. Add an autotuning harness for tile sizes, OC block sizes, and OpenMP thresholds.
 4. Investigate a VNNI / AVX-512 path on hardware that supports it.
