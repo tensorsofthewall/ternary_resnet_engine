@@ -25,14 +25,26 @@ bool can_use_conv1_ocblock4_7x7s2_avx2(const Conv2DParams& conv) {
 
 namespace {
 
-// Stride-2 gather: loads base[0], base[2], ..., base[14] as one AVX2 gather.
-// Replaces 8 scalar loads. scale=4 → each index is multiplied by sizeof(float).
-inline __m256 load_width_stride2_8(const float* base) {
-    return _mm256_i32gather_ps(
-        base,
-        _mm256_set_epi32(14, 12, 10, 8, 6, 4, 2, 0),
-        4
-    );
+// Reorder each row of a padded tensor in-place so that even-indexed columns
+// come first (indices 0,2,4,...) then odd-indexed (1,3,5,...).
+// After this, stride-2 access "base[0], base[2], ..., base[14]" for output
+// columns ow..ow+7 at kernel offset kx becomes a sequential loadu at:
+//   prepack_col = (kx & 1) * (W/2) + ow + (kx >> 1)
+static void prepack_stride2_rows(Tensor& t) {
+    const int C = t.c, H = t.h, W = t.w;
+    float* data = t.data.data();
+    const int half = W / 2;
+    std::vector<float> tmp(static_cast<size_t>(W));
+    for (int c = 0; c < C; ++c) {
+        for (int h = 0; h < H; ++h) {
+            float* row = data + (c * H + h) * W;
+            for (int i = 0; i < half; ++i) {
+                tmp[static_cast<size_t>(i)]        = row[2 * i];
+                tmp[static_cast<size_t>(half + i)] = row[2 * i + 1];
+            }
+            std::copy(tmp.data(), tmp.data() + W, row);
+        }
+    }
 }
 
 void conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
@@ -53,6 +65,7 @@ void conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
 
     if (conv.pad_h != 0 || conv.pad_w != 0) {
         pad_tensor_into(x, conv.pad_h, conv.pad_w, workspace.pad_buffer);
+        prepack_stride2_rows(workspace.pad_buffer);
         input_ptr = &workspace.pad_buffer;
     }
 
@@ -75,7 +88,9 @@ void conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
     const float* const data = xin.data.data();
     const __m256 zero_v = _mm256_setzero_ps();
 
-    // #pragma omp parallel for schedule(static)
+    const int prepack_half = xin.w / 2;  // 115 for padded 230-wide input
+
+    #pragma omp parallel for schedule(static)
     for (int block_idx = 0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
         const Conv1OCBlock4Plan& block = plan.oc_blocks[block_idx];
         const int oc = block.oc_start;
@@ -101,8 +116,6 @@ void conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
             const int ih3 = oh * 2 + 6;
 
             for (int ow = 0; ow < out_w; ow += 8) {
-                const int iw = ow * 2;
-
                 // 16 accumulators: acc[row][oc_channel] — fills AVX2's 16 ymm registers
                 __m256 acc00 = zero_v, acc01 = zero_v, acc02 = zero_v, acc03 = zero_v;
                 __m256 acc10 = zero_v, acc11 = zero_v, acc12 = zero_v, acc13 = zero_v;
@@ -117,14 +130,17 @@ void conv1_ocblock4_7x7s2_bn_relu_avx2_impl(
 
                     for (const Conv1OCBlock4Action& action : bucket.actions) {
                         const int ic_row = static_cast<int>(action.ic) * xin.h;
-                        const int ky    = static_cast<int>(action.ky);
-                        const int col   = iw + static_cast<int>(action.kx);
+                        const int ky     = static_cast<int>(action.ky);
+                        const int kx     = static_cast<int>(action.kx);
+                        // prepack_col maps (kx, ow) to a sequential index:
+                        //   even kx → even section (offset 0),  odd kx → odd section (offset half)
+                        //   shift within section = kx/2,  output column block = ow
+                        const int prepack_col = (kx & 1) * prepack_half + ow + (kx >> 1);
 
-                        // 4 independent gather loads — CPU can issue all in parallel
-                        const __m256 x0 = load_width_stride2_8(data + (ic_row + ih0 + ky) * xin.w + col);
-                        const __m256 x1 = load_width_stride2_8(data + (ic_row + ih1 + ky) * xin.w + col);
-                        const __m256 x2 = load_width_stride2_8(data + (ic_row + ih2 + ky) * xin.w + col);
-                        const __m256 x3 = load_width_stride2_8(data + (ic_row + ih3 + ky) * xin.w + col);
+                        const __m256 x0 = _mm256_loadu_ps(data + (ic_row + ih0 + ky) * xin.w + prepack_col);
+                        const __m256 x1 = _mm256_loadu_ps(data + (ic_row + ih1 + ky) * xin.w + prepack_col);
+                        const __m256 x2 = _mm256_loadu_ps(data + (ic_row + ih2 + ky) * xin.w + prepack_col);
+                        const __m256 x3 = _mm256_loadu_ps(data + (ic_row + ih3 + ky) * xin.w + prepack_col);
 
                         if (w0 == 1) {
                             acc00 = _mm256_add_ps(acc00, x0);
