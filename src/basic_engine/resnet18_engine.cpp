@@ -559,6 +559,46 @@ Tensor basic_block_timed(const Model& m, const Tensor& x, const std::string& pre
 
     return y;
 }
+// Workspace-mirrored timed block: same buffer/swap pattern as basic_block_ws, no return-by-value.
+static void basic_block_ws_timed(
+    const Model& m,
+    const std::string& prefix,
+    bool has_downsample,
+    EngineWorkspace& ws,
+    std::vector<TimingEntry>& timings
+) {
+    auto time_op = [&](const std::string& name, auto fn) {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        fn();
+        timings.push_back({name,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - t0).count()});
+    };
+
+    if (has_downsample) {
+        time_op(prefix + ".downsample.0", [&]() {
+            conv_bn(m, ws.buf_x, prefix + ".downsample.0",
+                    prefix + ".downsample.1", ws, ws.buf_identity);
+        });
+    }
+
+    time_op(prefix + ".conv1", [&]() {
+        conv_bn_relu(m, ws.buf_x, prefix + ".conv1", prefix + ".bn1", ws, ws.buf_a);
+    });
+
+    time_op(prefix + ".conv2", [&]() {
+        conv_bn(m, ws.buf_a, prefix + ".conv2", prefix + ".bn2", ws, ws.buf_b);
+    });
+
+    const Tensor& identity = has_downsample ? ws.buf_identity : ws.buf_x;
+    time_op(prefix + ".add_relu", [&]() {
+        add_inplace(ws.buf_b, identity);
+        relu_inplace(ws.buf_b);
+    });
+
+    std::swap(ws.buf_x, ws.buf_b);
+}
+
 } // namespace
 
 Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWorkspace& ws) {
@@ -579,6 +619,44 @@ Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWo
 
     Tensor x = adaptive_avgpool_1x1(ws.buf_x);
     return linear(x, model.linears.at("fc"));
+}
+
+Tensor forward_resnet18_workspace_timed(
+    const Model& model,
+    const Tensor& input,
+    EngineWorkspace& ws,
+    std::vector<TimingEntry>& timings
+) {
+    auto time_op = [&](const std::string& name, auto fn) {
+        const auto t0 = std::chrono::high_resolution_clock::now();
+        fn();
+        timings.push_back({name,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - t0).count()});
+    };
+
+    time_op("conv1+bn1+relu", [&]() {
+        conv_bn_relu(model, input, "conv1", "bn1", ws, ws.buf_a);
+    });
+    time_op("maxpool", [&]() {
+        maxpool2d_3x3_s2_p1_into(ws.buf_a, ws.buf_x);
+    });
+
+    basic_block_ws_timed(model, "layer1.0", false, ws, timings);
+    basic_block_ws_timed(model, "layer1.1", false, ws, timings);
+    basic_block_ws_timed(model, "layer2.0", true,  ws, timings);
+    basic_block_ws_timed(model, "layer2.1", false, ws, timings);
+    basic_block_ws_timed(model, "layer3.0", true,  ws, timings);
+    basic_block_ws_timed(model, "layer3.1", false, ws, timings);
+    basic_block_ws_timed(model, "layer4.0", true,  ws, timings);
+    basic_block_ws_timed(model, "layer4.1", false, ws, timings);
+
+    Tensor x = timed_op(timings, "avgpool", [&]() {
+        return adaptive_avgpool_1x1(ws.buf_x);
+    });
+    return timed_op(timings, "fc", [&]() {
+        return linear(x, model.linears.at("fc"));
+    });
 }
 
 Tensor forward_resnet18_scalar_timed(

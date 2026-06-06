@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
     std::cout << "  p90_ms:    " << stats.p90_ms << "\n";
 
     std::vector<TimingEntry> timings;
-    Tensor profiled_output = forward_resnet18_scalar_timed(model, input, workspace, timings);
+    Tensor profiled_output = forward_resnet18_workspace_timed(model, input, workspace, timings);
 
     double total_profiled_ms = 0.0;
 

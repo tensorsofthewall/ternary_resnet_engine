@@ -9,6 +9,13 @@
 
 Tensor forward_resnet18_scalar(const Model& model, const Tensor& input, EngineWorkspace& workspace);
 
+Tensor forward_resnet18_workspace_timed(
+    const Model& model,
+    const Tensor& input,
+    EngineWorkspace& workspace,
+    std::vector<TimingEntry>& timings
+);
+
 Tensor forward_resnet18_scalar_timed(
     const Model& model,
     const Tensor& input,

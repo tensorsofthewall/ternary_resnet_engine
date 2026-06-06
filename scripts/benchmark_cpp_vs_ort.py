@@ -214,8 +214,27 @@ def main() -> None:
         action="store_true",
         help="Only benchmark C++ and ORT INT8.",
     )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="Run cmake --build before benchmarking.",
+    )
+    parser.add_argument(
+        "--ort-profile",
+        action="store_true",
+        help="Run one ORT INT8 profiling pass after benchmarks and save Chrome trace JSON.",
+    )
 
     args = parser.parse_args()
+
+    if args.build:
+        import multiprocessing
+        result = subprocess.run(
+            ["cmake", "--build", "build", f"-j{multiprocessing.cpu_count()}"],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SystemExit("cmake build failed")
 
     artifact_dir: Path = args.artifact_dir
 
@@ -321,6 +340,26 @@ def main() -> None:
                 "runtime": "ort_int8",
                 **int8_stats,
             })
+
+    if args.ort_profile and not args.skip_ort_int8:
+        profile_threads = args.threads[0]
+        print(f"Running ORT INT8 profiling pass (threads={profile_threads})...")
+        prof_opts = ort.SessionOptions()
+        prof_opts.enable_profiling = True
+        prof_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        prof_opts.intra_op_num_threads = profile_threads
+        prof_opts.inter_op_num_threads = 1
+        prof_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        prof_session = ort.InferenceSession(
+            str(int8_onnx),
+            sess_options=prof_opts,
+            providers=["CPUExecutionProvider"],
+        )
+        input_name = prof_session.get_inputs()[0].name
+        prof_session.run(None, {input_name: x})  # warmup
+        prof_session.run(None, {input_name: x})  # profiled pass
+        trace_path = prof_session.end_profiling()
+        print(f"ORT profile trace: {trace_path}")
 
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2)
