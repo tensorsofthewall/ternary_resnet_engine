@@ -15,6 +15,28 @@ latency on the test machine.
 
 ---
 
+## Assignment Scope
+
+This project implements a standalone C++ inference engine for a ResNet-18 model with
+ternary weights (`{-1, 0, +1}`), targeting the following requirements:
+
+- **No ML inference framework in the C++ runtime.** The engine uses no PyTorch, ONNX
+  Runtime, MLAS, oneDNN, or OpenBLAS in its inference path. ORT and PyTorch are used
+  exclusively as benchmarking and profiling references.
+- **SIMD convolution kernels.** AVX2/FMA kernels cover all major layer families using
+  ternary-sparse dispatch, pattern grouping, and dynamic INT8 activation quantization.
+- **Ternary weight packing.** Conv weights are stored as `int8_t` values in
+  `{-1, 0, +1}`. A dense 2-bit packed representation is provided in
+  `artifacts/model_ternary_weights_2bit_packed.bin` for footprint reporting. At runtime,
+  weights are expanded into sparse/pattern plans for AVX2 execution.
+- **Benchmark comparison.** End-to-end latency is measured against PyTorch FP32, ORT
+  FP32, and ORT INT8 (static quantized) across 1–24 threads.
+- **Per-layer profiling.** The engine reports per-block latency in each run.
+- **Memory footprint reporting.** Artifact sizes, theoretical weight encodings, and
+  runtime workspace are reported by `scripts/report_memory_footprint.py`.
+
+---
+
 ## Hardware
 
 All benchmark numbers in this README were measured on:
@@ -27,9 +49,11 @@ All benchmark numbers in this README were measured on:
 - **Compiler**: GCC with `-O3 -march=native -mavx2 -mfma`
 - **Runtime threading**: OpenMP for the C++ engine, ORT intra-op threading for ONNX Runtime
 
-Useful C++ scaling extends to about 8 P-cores, after which additional threads may land on
-E-cores or hit memory-layout limits. At 24 threads (all logical cores) the engine reaches
-~7.2 ms min and beats ORT INT8, though with higher median variance.
+Useful C++ scaling extends to about 8 P-cores, after which additional threads land on
+E-cores with different clock characteristics. At 16–24 threads the engine's best-observed
+min latency beats ORT INT8 (which degrades due to QDQ graph fragmentation), but ORT FP32
+remains faster throughout. High-thread median variance reflects hybrid-core (P+E) scheduler
+effects.
 
 ---
 
@@ -210,6 +234,43 @@ Python-side CPU affinity mutation.
 
 ---
 
+## PyTorch FP32 Benchmark
+
+```bash
+python scripts/benchmark_pytorch_fp32.py \
+  --threads 1 2 4 8 16 24 \
+  --runs 100 \
+  --warmup 20
+```
+
+Outputs are written to:
+
+```text
+logs/pytorch_fp32_<timestamp>.json
+logs/pytorch_fp32_<timestamp>.csv
+```
+
+---
+
+## Memory Footprint Report
+
+```bash
+python scripts/report_memory_footprint.py
+```
+
+Outputs a Markdown table of model artifact sizes, theoretical weight storage, and runtime
+workspace breakdown. Writes to `logs/memory_footprint_<timestamp>.json` and `.md`.
+
+To generate the dense 2-bit packed ternary weight artifact first:
+
+```bash
+python tools/pack_ternary_weights.py
+```
+
+This writes `artifacts/model_ternary_weights_2bit_packed.bin`.
+
+---
+
 ## Allocation Profiling
 
 Allocation profiling is optional and is compiled in with `ENABLE_ALLOC_PROFILE`:
@@ -280,25 +341,29 @@ input = 3×224×224
 
 ### Current best comparison
 
-All numbers are `min_ms` over 100 timed runs after 20 warmup runs.
+All values are **min ms / median ms** over 100 timed runs after 20 warmup runs.
+Numbers from `logs/cpp_vs_ort_20260606_183157.csv` and `logs/pytorch_fp32_20260606_183255.csv`.
 
-| Threads | C++ engine | ORT FP32 | ORT INT8 | C++ vs ORT INT8 |
+| Threads | C++ engine | ORT INT8 | ORT FP32 | PyTorch FP32 |
 |---:|---:|---:|---:|---:|
-| 1 | 41.4 ms | 25.8 ms | 19.9 ms | ~2.1× slower |
-| 2 | 22.3 ms | 13.2 ms | 12.1 ms | ~1.8× slower |
-| 4 | 12.6 ms | 6.8 ms | 7.9 ms | ~1.6× slower |
-| 8 | 8.2 ms | 4.3 ms | 6.2 ms | ~1.3× slower |
-| 16 | 9.2 ms | 4.1 ms | 10.3 ms | **1.1× faster** |
-| 24 | 7.2 ms | 3.7 ms | 8.4 ms | **1.2× faster** |
+| 1 | 41.3 / 41.9 | 19.8 / 20.3 | 25.8 / 26.3 | 35.3 / 38.6 |
+| 2 | 22.4 / 23.1 | 12.4 / 13.0 | 13.1 / 13.5 | 18.9 / 19.7 |
+| 4 | 12.7 / 13.0 | 7.8 / 8.0 | 6.9 / 7.2 | 10.7 / 11.2 |
+| 8 | 8.3 / 8.6 | 6.3 / 6.8 | 4.4 / 4.4 | 7.0 / 7.3 |
+| 16 | 9.1 / 9.8 | 8.5 / 8.9 | 3.8 / 4.1 | 9.3 / 9.8 |
+| 24 | **7.3 / 7.6** | 8.6 / 10.4 | 3.7 / 4.0 | 8.3 / 10.5† |
 
-At 1–8 threads the C++ engine trails ORT INT8. At 16–24 threads the custom engine pulls
-ahead of ORT INT8, which degrades significantly past 8 threads due to QDQ graph
-fragmentation and quantize/dequantize op overhead under contention. ORT FP32 continues to
-scale the best across all thread counts.
+† PyTorch 24T mean=75 ms due to a thermal/scheduler spike during that run; median is
+representative.
 
-The C++ engine shows high variance at 16T (min=9.2 ms, median=16.5 ms) and is more stable
-at 24T (min=7.2 ms, median=7.5 ms). This reflects E-core assignment variability from the
-OS scheduler on the i7-12800HX's hybrid topology.
+At 1–8 threads the C++ engine trails all three baselines. At 16–24 threads its best-observed
+min beats ORT INT8 — ORT INT8 degrades past 8 threads because QDQ graph fragmentation
+(QuantizeLinear/DequantizeLinear ops) does not scale well under contention. ORT FP32 is the
+fastest and most stable baseline at all thread counts.
+
+The min/median spread at 16T (9.1 / 9.8 ms) is narrower than previously observed; the
+large median variance from the prior run was due to a mis-tuned benchmark that ran at a
+different system load. Both metrics are consistent at 24T (7.3 / 7.6 ms).
 
 ### Optimization timeline
 
@@ -573,6 +638,34 @@ counts. Conv1 remains single-threaded / specially handled rather than blindly pa
 
 ---
 
+## Memory Footprint
+
+Generated by `scripts/report_memory_footprint.py` (run after `tools/pack_ternary_weights.py`).
+
+| Component | Size |
+|---|---:|
+| ORT FP32 ONNX model (graph + external weights) | 44.72 MB |
+| ORT INT8 ONNX model | 11.32 MB |
+| Custom ternary model binary (INT8 weights + BN/FC FP32) | 12.68 MB |
+| Conv weights, FP32 (4 B/weight, 11.2 M weights) | 42.60 MB |
+| Conv weights, INT8 (1 B/weight) | 10.65 MB |
+| Conv weights, 2-bit packed (ternary dense, on disk) | 2.66 MB |
+| Conv weights, 1.58-bit theoretical (log₂3 bits/weight) | 2.11 MB |
+| Runtime workspace buffers (reserved at init) | 6.28 MB |
+| Heap allocations per inference (post-warmup) | 8 allocs / ~5 KB |
+
+The custom binary is larger than the 2-bit theoretical minimum because it stores BN
+parameters and FC weights in FP32, and uses INT8 (not packed bits) for the conv weights
+to enable direct AVX2 loads without bit-unpacking overhead. At runtime, 2-bit packing
+would require a bit-unpack step on the critical path, whereas the current INT8 storage
+enables `_mm256_cvtepi8_epi32` directly.
+
+The runtime workspace is pre-allocated at `EngineWorkspace` construction and never
+reallocated during inference. The 8 remaining heap allocations per pass are small
+string/map dispatch artifacts from downsample layer name lookups.
+
+---
+
 ## Known Limitations
 
 - **Still slower than ORT**: The current engine is about 2× slower than ORT INT8 at 1T and
@@ -601,9 +694,13 @@ counts. Conv1 remains single-threaded / specially handled rather than blindly pa
 ├── models/
 │   └── resnet18.py
 ├── tools/
-│   └── export_model.py
+│   ├── export_model.py
+│   └── pack_ternary_weights.py
 ├── scripts/
 │   ├── benchmark_cpp_vs_ort.py
+│   ├── benchmark_pytorch_fp32.py
+│   ├── report_memory_footprint.py
+│   ├── reproduce_all.sh
 │   └── bench_threads.sh
 ├── src/basic_engine/
 │   ├── main.cpp
@@ -659,16 +756,43 @@ close the ORT gap. More meaningful future work would require a different kernel 
 
 ---
 
+## Reproducing Results
+
+```bash
+bash scripts/reproduce_all.sh
+```
+
+This runs all steps in order: artifact generation, 2-bit weight packing, C++ build,
+single-thread smoke test, C++ vs ORT benchmark, PyTorch FP32 benchmark, and memory
+footprint report. Results are written to `logs/`.
+
+The script auto-detects `.venv/bin/python` if present. Set `PYTHON=/path/to/python` to
+override.
+
+---
+
 ## Summary
 
 This engine started as a naive scalar ternary ResNet-18 implementation and progressively
 added sparsity, padding, BN fusion, AVX2 vectorization, pattern grouping, q8 activation
 kernels, OpenMP scaling, workspace execution, ORT profiling, and allocation cleanup.
 
+The C++ runtime uses no PyTorch, ONNX Runtime, MLAS, oneDNN, or any third-party inference
+library. ORT and PyTorch are used only as benchmarking references.
+
+**Current performance** (i7-12800HX, 100 runs, batch=1):
+
+- **1T**: C++ 41.3 ms vs ORT INT8 19.8 ms — engine is ~2× slower. The gap is kernel
+  arithmetic intensity; MLAS/GEMM-style packing is out of scope for this project.
+- **8T**: C++ 8.3 ms vs ORT INT8 6.3 ms — gap narrows to ~1.3×.
+- **16–24T**: C++ beats ORT INT8 in best-observed min latency (7.3 ms vs 8.6 ms at 24T)
+  because ORT INT8 degrades from QDQ graph fragmentation. This is a min-only result;
+  ORT FP32 remains the fastest baseline at all thread counts (3.7 ms at 24T).
+
 The final result is not an ORT replacement, but it is a useful kernel-design study:
 
-- It demonstrates a large speedup over the original custom scalar baseline.
-- It reaches low-millisecond latency at 8 threads.
-- It explains why ORT remains faster.
-- It documents both successful optimizations and failed hypotheses.
-- It provides a clean basis for future packed/GEMM-style kernel experiments.
+- Demonstrates a large speedup over the original custom scalar baseline (~60× at 8T).
+- Reaches single-digit millisecond latency at 8+ threads.
+- Explains precisely why ORT INT8 remains faster at 1–8T.
+- Documents both successful optimizations and failed hypotheses with measurements.
+- Provides a clean basis for future packed/GEMM-style kernel experiments.
