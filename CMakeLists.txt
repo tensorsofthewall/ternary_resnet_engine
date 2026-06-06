@@ -161,7 +161,43 @@ target_compile_options(benchmark_gemm3x3 PRIVATE
 
 find_package(OpenMP REQUIRED)
 
+add_executable(benchmark_nchwc
+    src/basic_engine/benchmark_nchwc.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/resnet18_engine.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_avx2.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock2_avx2.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock4_avx2.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_avx2.cpp
+    src/basic_engine/quantized/quant_utils.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock4_avx2.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock2_avx2.cpp
+    src/basic_engine/quantized/conv1x1_q8_s2_avx2.cpp
+    src/basic_engine/quantized/packed_q8_3x3_kernel.cpp
+)
+
+target_include_directories(benchmark_nchwc PRIVATE src/basic_engine)
+target_compile_definitions(benchmark_nchwc PRIVATE NDEBUG)
+target_compile_options(benchmark_nchwc PRIVATE
+    -O3
+    -march=native
+    -Wall
+    -Wextra
+    -Wpedantic
+    -mavx2
+    -mfma
+)
+
 target_link_libraries(basic_engine PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_layer4_q8 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_packed_3x3 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_gemm3x3 PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(benchmark_nchwc PRIVATE OpenMP::OpenMP_CXX)

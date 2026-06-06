@@ -103,6 +103,7 @@ build/basic_engine
 build/benchmark_layer4_q8
 build/benchmark_packed_3x3
 build/benchmark_gemm3x3
+build/benchmark_nchwc
 ```
 
 The main executable is `build/basic_engine`.
@@ -670,6 +671,53 @@ AVX2. Not integrated. Files retained in `benchmark_gemm3x3.cpp` for reference.
 
 ---
 
+### NCHWc16 blocked activation layout
+
+**Hypothesis**: reorganising the padded quantized input from NCHW into NCHWc16
+(`data[CB][H_pad][W_pad][16]`, 16 channels innermost per pixel) would enable
+16-channel SIMD loads for a sparse action plan iterated by `(CB, KY, KX)` block,
+matching the strategy used by ORT/MLAS packed-GEMM kernels.
+
+**Design**: Layout A — NCHWc16, CB=8 blocks for IC=128. Conversion from NCHW padded
+int8: 128 KB rearrangement (scalar, stride-16 writes). Sparse plan: per `(CB, KY, KX)`
+block → list of `(OC, CI, sign)` pairs. Kernel: per-oh row, stride-16 byte gathers
+for 28 OW positions per action, sign-branch on ±1.
+
+**Results** (1T, 100 runs, min_ms):
+
+| Kernel | Quantize | Convert | Compute | Total | vs bucket |
+|---|---:|---:|---:|---:|---:|
+| bucket (baseline) | 0.048 ms | — | 2.62 ms | 2.67 ms | 1.00× |
+| packed sparse | 0.045 ms | — | 2.08 ms | 2.13 ms | 1.25× |
+| NCHWc16 Layout A | 0.048 ms | **0.033 ms** | 17.57 ms | 17.66 ms | **0.15×** |
+
+**Root causes**:
+
+- *Stride-16 gathers*: for each of the 85,130 sparse actions per output row, the inner
+  loop `src[n * 16]` for n=0..27 reads 28 bytes separated by stride 16. This is a pure
+  scalar gather — the compiler cannot vectorize a stride-16 byte access over OW. Same
+  structural problem as the dense GEMM branch-misprediction: the memory access pattern
+  is incompatible with OW-vectorization.
+- *Sign-branch misprediction*: the `if (act.sign == 1)` branch at the action level
+  sees ~50% +1 / ~50% −1, same misprediction rate as the dense GEMM inner loop.
+- *Convert is nearly free*: 0.033 ms for 128 KB rearrangement. NCHWc16 conversion
+  overhead is not the bottleneck; the gather-based compute is.
+
+**Key finding**: NCHW with contiguous OW rows is the right layout for this kernel
+family. NCHWc16 is only beneficial when the engine can vectorize over the CI=16
+channel dimension simultaneously across all OW positions — which requires a
+fundamentally different kernel structure (e.g., im2col transposition first, producing
+a contiguous CI×OW panel). That extra transposition step would recreate the A_panel
+approach, adding conversion overhead with no net gain.
+
+Layout B (NCHWcW: `data[CB][H][WB][16][WI]`) not attempted — stop condition triggered.
+
+**Conclusion**: NCHWc16 is 6.7× slower than the bucket kernel. OW-vectorized NCHW is
+the correct layout for the sparse ternary kernel. Files retained in
+`benchmark_nchwc.cpp` for reference.
+
+---
+
 ### Naive conv1 OpenMP
 
 Parallelizing conv1 with naive output-channel threading regressed, especially at high thread
@@ -714,8 +762,9 @@ string/map dispatch artifacts from downsample layer name lookups.
   M_TILE=2 experiment was conducted (`benchmark_gemm3x3`) and found to be 5× slower than
   the bucket kernel due to branch misprediction on random ternary weights (see "What Did
   Not Work").
-- **NCHW layout constraints**: NCHW works well for current OC-block writes but limits some
-  spatial tiling strategies.
+- **NCHW layout constraints**: NCHW works well for current OC-block writes and is the
+  correct layout for OW-vectorized sparse kernels. NCHWc16 was benchmarked and found to
+  be 6.7× slower due to stride-16 scatter-gather over OW (see "What Did Not Work").
 - **Fixed input shape**: Kernels are specialized for the 224×224 ResNet-18 shape.
 - **AVX2 only**: No AVX-512/VNNI path is implemented.
 - **Dynamic activation quantization overhead**: q8 helps many layers, but quantize+pad
@@ -766,6 +815,7 @@ string/map dispatch artifacts from downsample layer name lookups.
 │   ├── conv1_ocblock4_avx2.cpp / .hpp
 │   ├── benchmark_packed_3x3.cpp  (packed sparse activation-panel experiment)
 │   ├── benchmark_gemm3x3.cpp    (dense GEMM M_TILE=2 experiment; negative result)
+│   ├── benchmark_nchwc.cpp      (NCHWc16 blocked layout diagnostic; negative result)
 │   └── quantized/
 │       ├── quant_tensor.hpp
 │       ├── quant_utils.cpp / .hpp
@@ -786,12 +836,12 @@ string/map dispatch artifacts from downsample layer name lookups.
 The current code is at the point where small dispatch/allocation cleanups are unlikely to
 close the ORT gap. More meaningful future work would require a different kernel strategy:
 
-1. Both the packed activation-panel approach and a dense GEMM-style M_TILE=2 kernel were
-   attempted and closed (see "What Did Not Work"). The sparse branch-free design is the
-   performance ceiling for ternary weights with the current AVX2 toolkit. A meaningful next
-   step would require a fundamentally different representation — im2col + branchless ternary
-   dot product, or blocking over register tiles with explicit weight-sign encoding that avoids
-   per-k branches.
+1. Packed activation-panel (sparse), dense GEMM M_TILE=2, and NCHWc16 blocked layout were
+   all attempted and closed (see "What Did Not Work"). The sparse branch-free OW-vectorized
+   design over NCHW is the performance ceiling for the current AVX2 toolkit. A meaningful
+   next step would require a fundamentally different approach — im2col into a dense
+   K×N panel followed by a branchless ternary microkernel, accepting the im2col overhead
+   in exchange for high arithmetic intensity over the panel.
 2. Explore blocked layouts that preserve output locality while improving input reuse.
 3. Add an autotuning harness for tile sizes, OC block sizes, and OpenMP thresholds.
 4. Investigate a VNNI / AVX-512 path on hardware that supports it.
