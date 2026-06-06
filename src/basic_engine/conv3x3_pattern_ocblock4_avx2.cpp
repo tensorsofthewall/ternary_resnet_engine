@@ -493,9 +493,11 @@ void conv3x3_pattern_ocblock4_layer4_s2_bn_avx2_impl(
 
 }
 
-// OC4+OH2 kernel: runtime per-weight conditionals to avoid 81-case template dispatch.
-// Processes 4 output channels and 2 output rows per tile → 8 accumulators.
-// Branch prediction is perfect: w0..w3 are constant within each bucket.
+// OC4+OH2 bucket kernel: iterates buckets in outer loop so w0..w3 are constant
+// within the action inner loop — the compiler hoists the four weight conditionals,
+// giving branch-prediction-free code per bucket. Actions within each bucket are in
+// IC-ascending order (plan builder loop order), giving sequential cache access.
+// 8 accumulators (4 OC × 2 rows) fit in AVX2's 16 ymm registers alongside temporaries.
 void conv3x3_pattern_ocblock4_s1_bn_avx2_impl(
     const Tensor& x,
     const Conv2DParams& conv,
@@ -538,131 +540,142 @@ void conv3x3_pattern_ocblock4_s1_bn_avx2_impl(
         const __m256 bias2  = _mm256_set1_ps(bn.bias[static_cast<size_t>(oc + 2)]);
         const __m256 bias3  = _mm256_set1_ps(bn.bias[static_cast<size_t>(oc + 3)]);
 
-        // Flat accumulation: single contiguous loop over flat_actions.
-        // Actions are sorted by (w0,w1,w2,w3) pattern, so branches within each
-        // pattern-run are perfectly predicted; only ~80 transitions cause mispredictions.
-        // No per-bucket pointer chasing — all action data is in one cache-friendly block.
-        auto accumulate = [&](
-            int oh0, int oh1, int ow_start, int valid_lanes,
-            __m256& a0r0, __m256& a0r1,
-            __m256& a1r0, __m256& a1r1,
-            __m256& a2r0, __m256& a2r1,
-            __m256& a3r0, __m256& a3r1
-        ) {
-            for (const OCBlock4FlatAction& a : block.flat_actions) {
-                const int ih0 = oh0 + static_cast<int>(a.ky);
-                const int ih1 = oh1 + static_cast<int>(a.ky);
-                const int iw  = ow_start + static_cast<int>(a.kx);
-                const int b0  = (static_cast<int>(a.ic) * xin_h + ih0) * xin_w + iw;
-                const int b1  = (static_cast<int>(a.ic) * xin_h + ih1) * xin_w + iw;
-
-                __m256 x0, x1;
-                if (valid_lanes == 8) {
-                    x0 = _mm256_loadu_ps(xdata + b0);
-                    x1 = _mm256_loadu_ps(xdata + b1);
-                } else {
-                    x0 = load_width_masked_stride1_8(xdata + b0, valid_lanes);
-                    x1 = load_width_masked_stride1_8(xdata + b1, valid_lanes);
-                }
-
-                if (a.w0 == 1) { a0r0 = _mm256_add_ps(a0r0, x0); a0r1 = _mm256_add_ps(a0r1, x1); }
-                else if (a.w0 == -1) { a0r0 = _mm256_sub_ps(a0r0, x0); a0r1 = _mm256_sub_ps(a0r1, x1); }
-
-                if (a.w1 == 1) { a1r0 = _mm256_add_ps(a1r0, x0); a1r1 = _mm256_add_ps(a1r1, x1); }
-                else if (a.w1 == -1) { a1r0 = _mm256_sub_ps(a1r0, x0); a1r1 = _mm256_sub_ps(a1r1, x1); }
-
-                if (a.w2 == 1) { a2r0 = _mm256_add_ps(a2r0, x0); a2r1 = _mm256_add_ps(a2r1, x1); }
-                else if (a.w2 == -1) { a2r0 = _mm256_sub_ps(a2r0, x0); a2r1 = _mm256_sub_ps(a2r1, x1); }
-
-                if (a.w3 == 1) { a3r0 = _mm256_add_ps(a3r0, x0); a3r1 = _mm256_add_ps(a3r1, x1); }
-                else if (a.w3 == -1) { a3r0 = _mm256_sub_ps(a3r0, x0); a3r1 = _mm256_sub_ps(a3r1, x1); }
-            }
-        };
-
-        auto bn_relu_store2 = [&](
-            int oh0, int oh1, int ow_start, int valid_lanes,
-            __m256 a0r0, __m256 a0r1,
-            __m256 a1r0, __m256 a1r1,
-            __m256 a2r0, __m256 a2r1,
-            __m256 a3r0, __m256 a3r1
-        ) {
-            a0r0 = _mm256_add_ps(_mm256_mul_ps(a0r0, scale0), bias0);
-            a0r1 = _mm256_add_ps(_mm256_mul_ps(a0r1, scale0), bias0);
-            a1r0 = _mm256_add_ps(_mm256_mul_ps(a1r0, scale1), bias1);
-            a1r1 = _mm256_add_ps(_mm256_mul_ps(a1r1, scale1), bias1);
-            a2r0 = _mm256_add_ps(_mm256_mul_ps(a2r0, scale2), bias2);
-            a2r1 = _mm256_add_ps(_mm256_mul_ps(a2r1, scale2), bias2);
-            a3r0 = _mm256_add_ps(_mm256_mul_ps(a3r0, scale3), bias3);
-            a3r1 = _mm256_add_ps(_mm256_mul_ps(a3r1, scale3), bias3);
-
-            if (apply_relu) {
-                a0r0 = _mm256_max_ps(a0r0, zero_v); a0r1 = _mm256_max_ps(a0r1, zero_v);
-                a1r0 = _mm256_max_ps(a1r0, zero_v); a1r1 = _mm256_max_ps(a1r1, zero_v);
-                a2r0 = _mm256_max_ps(a2r0, zero_v); a2r1 = _mm256_max_ps(a2r1, zero_v);
-                a3r0 = _mm256_max_ps(a3r0, zero_v); a3r1 = _mm256_max_ps(a3r1, zero_v);
-            }
-
-            if (valid_lanes == 8) {
-                _mm256_storeu_ps(y_out.ptr(oc + 0, oh0, ow_start), a0r0);
-                _mm256_storeu_ps(y_out.ptr(oc + 0, oh1, ow_start), a0r1);
-                _mm256_storeu_ps(y_out.ptr(oc + 1, oh0, ow_start), a1r0);
-                _mm256_storeu_ps(y_out.ptr(oc + 1, oh1, ow_start), a1r1);
-                _mm256_storeu_ps(y_out.ptr(oc + 2, oh0, ow_start), a2r0);
-                _mm256_storeu_ps(y_out.ptr(oc + 2, oh1, ow_start), a2r1);
-                _mm256_storeu_ps(y_out.ptr(oc + 3, oh0, ow_start), a3r0);
-                _mm256_storeu_ps(y_out.ptr(oc + 3, oh1, ow_start), a3r1);
-            } else {
-                store_width_masked_8(y_out.ptr(oc + 0, oh0, ow_start), a0r0, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 0, oh1, ow_start), a0r1, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 1, oh0, ow_start), a1r0, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 1, oh1, ow_start), a1r1, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 2, oh0, ow_start), a2r0, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 2, oh1, ow_start), a2r1, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 3, oh0, ow_start), a3r0, valid_lanes);
-                store_width_masked_8(y_out.ptr(oc + 3, oh1, ow_start), a3r1, valid_lanes);
-            }
-        };
-
         int oh = 0;
 
-        // OH_BLOCK=2: process 2 output rows per iteration
+        // OH_BLOCK=2: process 2 output rows per tile.
+        // ResNet-18 spatial dims are all even so the scalar tail never fires.
         for (; oh + 1 < out_h; oh += 2) {
             const int ih0_base = oh;
             const int ih1_base = oh + 1;
             int ow = 0;
 
             for (; ow + 7 < out_w; ow += 8) {
-                __m256 a0r0=zero_v, a0r1=zero_v, a1r0=zero_v, a1r1=zero_v;
-                __m256 a2r0=zero_v, a2r1=zero_v, a3r0=zero_v, a3r1=zero_v;
-                accumulate(ih0_base, ih1_base, ow, 8,
-                           a0r0, a0r1, a1r0, a1r1, a2r0, a2r1, a3r0, a3r1);
-                bn_relu_store2(oh, oh + 1, ow, 8,
-                               a0r0, a0r1, a1r0, a1r1, a2r0, a2r1, a3r0, a3r1);
+                __m256 a0r0=zero_v, a0r1=zero_v;
+                __m256 a1r0=zero_v, a1r1=zero_v;
+                __m256 a2r0=zero_v, a2r1=zero_v;
+                __m256 a3r0=zero_v, a3r1=zero_v;
+
+                for (const OCBlock4PatternBucket& bucket : block.buckets) {
+                    // w0..w3 are loop-invariant within the action loop —
+                    // the compiler hoists the four if/else chains out.
+                    const int8_t w0 = bucket.w0, w1 = bucket.w1;
+                    const int8_t w2 = bucket.w2, w3 = bucket.w3;
+
+                    for (const OCBlock4PatternAction& action : bucket.actions) {
+                        const int ic = static_cast<int>(action.ic);
+                        const int ky = static_cast<int>(action.ky);
+                        const int b0 = (ic * xin_h + ih0_base + ky) * xin_w + ow + static_cast<int>(action.kx);
+                        const int b1 = b0 + xin_w;
+
+                        const __m256 x0 = _mm256_loadu_ps(xdata + b0);
+                        const __m256 x1 = _mm256_loadu_ps(xdata + b1);
+
+                        if (w0 == 1)       { a0r0=_mm256_add_ps(a0r0,x0); a0r1=_mm256_add_ps(a0r1,x1); }
+                        else if (w0 == -1) { a0r0=_mm256_sub_ps(a0r0,x0); a0r1=_mm256_sub_ps(a0r1,x1); }
+
+                        if (w1 == 1)       { a1r0=_mm256_add_ps(a1r0,x0); a1r1=_mm256_add_ps(a1r1,x1); }
+                        else if (w1 == -1) { a1r0=_mm256_sub_ps(a1r0,x0); a1r1=_mm256_sub_ps(a1r1,x1); }
+
+                        if (w2 == 1)       { a2r0=_mm256_add_ps(a2r0,x0); a2r1=_mm256_add_ps(a2r1,x1); }
+                        else if (w2 == -1) { a2r0=_mm256_sub_ps(a2r0,x0); a2r1=_mm256_sub_ps(a2r1,x1); }
+
+                        if (w3 == 1)       { a3r0=_mm256_add_ps(a3r0,x0); a3r1=_mm256_add_ps(a3r1,x1); }
+                        else if (w3 == -1) { a3r0=_mm256_sub_ps(a3r0,x0); a3r1=_mm256_sub_ps(a3r1,x1); }
+                    }
+                }
+
+                a0r0=_mm256_add_ps(_mm256_mul_ps(a0r0,scale0),bias0); a0r1=_mm256_add_ps(_mm256_mul_ps(a0r1,scale0),bias0);
+                a1r0=_mm256_add_ps(_mm256_mul_ps(a1r0,scale1),bias1); a1r1=_mm256_add_ps(_mm256_mul_ps(a1r1,scale1),bias1);
+                a2r0=_mm256_add_ps(_mm256_mul_ps(a2r0,scale2),bias2); a2r1=_mm256_add_ps(_mm256_mul_ps(a2r1,scale2),bias2);
+                a3r0=_mm256_add_ps(_mm256_mul_ps(a3r0,scale3),bias3); a3r1=_mm256_add_ps(_mm256_mul_ps(a3r1,scale3),bias3);
+
+                if (apply_relu) {
+                    a0r0=_mm256_max_ps(a0r0,zero_v); a0r1=_mm256_max_ps(a0r1,zero_v);
+                    a1r0=_mm256_max_ps(a1r0,zero_v); a1r1=_mm256_max_ps(a1r1,zero_v);
+                    a2r0=_mm256_max_ps(a2r0,zero_v); a2r1=_mm256_max_ps(a2r1,zero_v);
+                    a3r0=_mm256_max_ps(a3r0,zero_v); a3r1=_mm256_max_ps(a3r1,zero_v);
+                }
+
+                _mm256_storeu_ps(y_out.ptr(oc+0, oh,   ow), a0r0);
+                _mm256_storeu_ps(y_out.ptr(oc+0, oh+1, ow), a0r1);
+                _mm256_storeu_ps(y_out.ptr(oc+1, oh,   ow), a1r0);
+                _mm256_storeu_ps(y_out.ptr(oc+1, oh+1, ow), a1r1);
+                _mm256_storeu_ps(y_out.ptr(oc+2, oh,   ow), a2r0);
+                _mm256_storeu_ps(y_out.ptr(oc+2, oh+1, ow), a2r1);
+                _mm256_storeu_ps(y_out.ptr(oc+3, oh,   ow), a3r0);
+                _mm256_storeu_ps(y_out.ptr(oc+3, oh+1, ow), a3r1);
             }
 
+            // Masked tail for output widths not divisible by 8
             if (ow < out_w) {
                 const int valid = out_w - ow;
-                __m256 a0r0=zero_v, a0r1=zero_v, a1r0=zero_v, a1r1=zero_v;
-                __m256 a2r0=zero_v, a2r1=zero_v, a3r0=zero_v, a3r1=zero_v;
-                accumulate(ih0_base, ih1_base, ow, valid,
-                           a0r0, a0r1, a1r0, a1r1, a2r0, a2r1, a3r0, a3r1);
-                bn_relu_store2(oh, oh + 1, ow, valid,
-                               a0r0, a0r1, a1r0, a1r1, a2r0, a2r1, a3r0, a3r1);
+                __m256 a0r0=zero_v, a0r1=zero_v;
+                __m256 a1r0=zero_v, a1r1=zero_v;
+                __m256 a2r0=zero_v, a2r1=zero_v;
+                __m256 a3r0=zero_v, a3r1=zero_v;
+
+                for (const OCBlock4PatternBucket& bucket : block.buckets) {
+                    const int8_t w0 = bucket.w0, w1 = bucket.w1;
+                    const int8_t w2 = bucket.w2, w3 = bucket.w3;
+
+                    for (const OCBlock4PatternAction& action : bucket.actions) {
+                        const int ic = static_cast<int>(action.ic);
+                        const int ky = static_cast<int>(action.ky);
+                        const int b0 = (ic * xin_h + ih0_base + ky) * xin_w + ow + static_cast<int>(action.kx);
+                        const int b1 = b0 + xin_w;
+
+                        const __m256 x0 = load_width_masked_stride1_8(xdata + b0, valid);
+                        const __m256 x1 = load_width_masked_stride1_8(xdata + b1, valid);
+
+                        if (w0 == 1)       { a0r0=_mm256_add_ps(a0r0,x0); a0r1=_mm256_add_ps(a0r1,x1); }
+                        else if (w0 == -1) { a0r0=_mm256_sub_ps(a0r0,x0); a0r1=_mm256_sub_ps(a0r1,x1); }
+                        if (w1 == 1)       { a1r0=_mm256_add_ps(a1r0,x0); a1r1=_mm256_add_ps(a1r1,x1); }
+                        else if (w1 == -1) { a1r0=_mm256_sub_ps(a1r0,x0); a1r1=_mm256_sub_ps(a1r1,x1); }
+                        if (w2 == 1)       { a2r0=_mm256_add_ps(a2r0,x0); a2r1=_mm256_add_ps(a2r1,x1); }
+                        else if (w2 == -1) { a2r0=_mm256_sub_ps(a2r0,x0); a2r1=_mm256_sub_ps(a2r1,x1); }
+                        if (w3 == 1)       { a3r0=_mm256_add_ps(a3r0,x0); a3r1=_mm256_add_ps(a3r1,x1); }
+                        else if (w3 == -1) { a3r0=_mm256_sub_ps(a3r0,x0); a3r1=_mm256_sub_ps(a3r1,x1); }
+                    }
+                }
+
+                a0r0=_mm256_add_ps(_mm256_mul_ps(a0r0,scale0),bias0); a0r1=_mm256_add_ps(_mm256_mul_ps(a0r1,scale0),bias0);
+                a1r0=_mm256_add_ps(_mm256_mul_ps(a1r0,scale1),bias1); a1r1=_mm256_add_ps(_mm256_mul_ps(a1r1,scale1),bias1);
+                a2r0=_mm256_add_ps(_mm256_mul_ps(a2r0,scale2),bias2); a2r1=_mm256_add_ps(_mm256_mul_ps(a2r1,scale2),bias2);
+                a3r0=_mm256_add_ps(_mm256_mul_ps(a3r0,scale3),bias3); a3r1=_mm256_add_ps(_mm256_mul_ps(a3r1,scale3),bias3);
+
+                if (apply_relu) {
+                    a0r0=_mm256_max_ps(a0r0,zero_v); a0r1=_mm256_max_ps(a0r1,zero_v);
+                    a1r0=_mm256_max_ps(a1r0,zero_v); a1r1=_mm256_max_ps(a1r1,zero_v);
+                    a2r0=_mm256_max_ps(a2r0,zero_v); a2r1=_mm256_max_ps(a2r1,zero_v);
+                    a3r0=_mm256_max_ps(a3r0,zero_v); a3r1=_mm256_max_ps(a3r1,zero_v);
+                }
+
+                store_width_masked_8(y_out.ptr(oc+0, oh,   ow), a0r0, valid);
+                store_width_masked_8(y_out.ptr(oc+0, oh+1, ow), a0r1, valid);
+                store_width_masked_8(y_out.ptr(oc+1, oh,   ow), a1r0, valid);
+                store_width_masked_8(y_out.ptr(oc+1, oh+1, ow), a1r1, valid);
+                store_width_masked_8(y_out.ptr(oc+2, oh,   ow), a2r0, valid);
+                store_width_masked_8(y_out.ptr(oc+2, oh+1, ow), a2r1, valid);
+                store_width_masked_8(y_out.ptr(oc+3, oh,   ow), a3r0, valid);
+                store_width_masked_8(y_out.ptr(oc+3, oh+1, ow), a3r1, valid);
             }
         }
 
-        // Scalar fallback for odd last row (rare: ResNet-18 spatial dims are all even)
+        // Scalar tail for odd out_h (ResNet-18 spatial dims are all even, so never taken)
         for (; oh < out_h; ++oh) {
             for (int ow = 0; ow < out_w; ++ow) {
                 float acc0 = 0.f, acc1 = 0.f, acc2 = 0.f, acc3 = 0.f;
-                for (const OCBlock4FlatAction& a : block.flat_actions) {
-                    const int ih = oh + static_cast<int>(a.ky);
-                    const int iw = ow + static_cast<int>(a.kx);
-                    const float xv = xdata[(static_cast<int>(a.ic) * xin_h + ih) * xin_w + iw];
-                    if (a.w0 ==  1) acc0 += xv; else if (a.w0 == -1) acc0 -= xv;
-                    if (a.w1 ==  1) acc1 += xv; else if (a.w1 == -1) acc1 -= xv;
-                    if (a.w2 ==  1) acc2 += xv; else if (a.w2 == -1) acc2 -= xv;
-                    if (a.w3 ==  1) acc3 += xv; else if (a.w3 == -1) acc3 -= xv;
+                for (const OCBlock4PatternBucket& bucket : block.buckets) {
+                    const int8_t w0=bucket.w0, w1=bucket.w1, w2=bucket.w2, w3=bucket.w3;
+                    for (const OCBlock4PatternAction& a : bucket.actions) {
+                        const int ih = oh + static_cast<int>(a.ky);
+                        const int iw = ow + static_cast<int>(a.kx);
+                        const float xv = xdata[(static_cast<int>(a.ic) * xin_h + ih) * xin_w + iw];
+                        if (w0 ==  1) acc0 += xv; else if (w0 == -1) acc0 -= xv;
+                        if (w1 ==  1) acc1 += xv; else if (w1 == -1) acc1 -= xv;
+                        if (w2 ==  1) acc2 += xv; else if (w2 == -1) acc2 -= xv;
+                        if (w3 ==  1) acc3 += xv; else if (w3 == -1) acc3 -= xv;
+                    }
                 }
                 acc0 = acc0 * bn.scale[static_cast<size_t>(oc+0)] + bn.bias[static_cast<size_t>(oc+0)];
                 acc1 = acc1 * bn.scale[static_cast<size_t>(oc+1)] + bn.bias[static_cast<size_t>(oc+1)];

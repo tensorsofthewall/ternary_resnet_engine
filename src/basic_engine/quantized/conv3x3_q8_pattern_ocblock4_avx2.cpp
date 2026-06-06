@@ -798,6 +798,8 @@ void conv3x3_q8_ocblock4_layer1_s1_bn_avx2_impl(
     y_out.reuse(conv.out_channels, out_h, out_w);
 
     const int8_t* const data = xq.data.data();
+    const int xq_h = xq.h;
+    const int xq_w = xq.w;
 
     #pragma omp parallel for schedule(static)
     for (int block_idx = 0; block_idx < static_cast<int>(plan.oc_blocks.size()); ++block_idx) {
@@ -809,13 +811,17 @@ void conv3x3_q8_ocblock4_layer1_s1_bn_avx2_impl(
         const float out_scale2 = xq.scale * bn.scale[static_cast<size_t>(oc + 2)];
         const float out_scale3 = xq.scale * bn.scale[static_cast<size_t>(oc + 3)];
 
-        const float bias0 = bn.bias[static_cast<size_t>(oc + 0)];
-        const float bias1 = bn.bias[static_cast<size_t>(oc + 1)];
-        const float bias2 = bn.bias[static_cast<size_t>(oc + 2)];
-        const float bias3 = bn.bias[static_cast<size_t>(oc + 3)];
-
+        const __m256 s0_v = _mm256_set1_ps(out_scale0);
+        const __m256 s1_v = _mm256_set1_ps(out_scale1);
+        const __m256 s2_v = _mm256_set1_ps(out_scale2);
+        const __m256 s3_v = _mm256_set1_ps(out_scale3);
+        const __m256 b0_v = _mm256_set1_ps(bn.bias[static_cast<size_t>(oc + 0)]);
+        const __m256 b1_v = _mm256_set1_ps(bn.bias[static_cast<size_t>(oc + 1)]);
+        const __m256 b2_v = _mm256_set1_ps(bn.bias[static_cast<size_t>(oc + 2)]);
+        const __m256 b3_v = _mm256_set1_ps(bn.bias[static_cast<size_t>(oc + 3)]);
         const __m256 zero_v = _mm256_setzero_ps();
 
+        // out_h=56, out_w=56 → 28 OH pairs, 7 OW tiles all full (56/8=7 exact)
         for (int oh = 0; oh < out_h; oh += 2) {
             for (int ow = 0; ow < out_w; ow += 8) {
                 __m256i acc00 = _mm256_setzero_si256();
@@ -828,59 +834,18 @@ void conv3x3_q8_ocblock4_layer1_s1_bn_avx2_impl(
                 __m256i acc13 = _mm256_setzero_si256();
 
                 for (const OCBlock4PatternBucket& bucket : block.buckets) {
-                    const int8_t w0 = bucket.w0;
-                    const int8_t w1 = bucket.w1;
-                    const int8_t w2 = bucket.w2;
-                    const int8_t w3 = bucket.w3;
-
-                    for (const OCBlock4PatternAction& action : bucket.actions) {
-                        const int ih = oh + static_cast<int>(action.ky);
-                        const int iw = ow + static_cast<int>(action.kx);
-                        const int base0 = (static_cast<int>(action.ic) * xq.h + ih) * xq.w + iw;
-                        const int base1 = base0 + xq.w;
-
-                        const __m256i xvec0 = load_i8_width8_s1_to_i32_fast(data + base0);
-                        const __m256i xvec1 = load_i8_width8_s1_to_i32_fast(data + base1);
-
-                        if (w0 == 1) {
-                            acc00 = _mm256_add_epi32(acc00, xvec0);
-                            acc10 = _mm256_add_epi32(acc10, xvec1);
-                        } else if (w0 == -1) {
-                            acc00 = _mm256_sub_epi32(acc00, xvec0);
-                            acc10 = _mm256_sub_epi32(acc10, xvec1);
-                        }
-                        if (w1 == 1) {
-                            acc01 = _mm256_add_epi32(acc01, xvec0);
-                            acc11 = _mm256_add_epi32(acc11, xvec1);
-                        } else if (w1 == -1) {
-                            acc01 = _mm256_sub_epi32(acc01, xvec0);
-                            acc11 = _mm256_sub_epi32(acc11, xvec1);
-                        }
-                        if (w2 == 1) {
-                            acc02 = _mm256_add_epi32(acc02, xvec0);
-                            acc12 = _mm256_add_epi32(acc12, xvec1);
-                        } else if (w2 == -1) {
-                            acc02 = _mm256_sub_epi32(acc02, xvec0);
-                            acc12 = _mm256_sub_epi32(acc12, xvec1);
-                        }
-                        if (w3 == 1) {
-                            acc03 = _mm256_add_epi32(acc03, xvec0);
-                            acc13 = _mm256_add_epi32(acc13, xvec1);
-                        } else if (w3 == -1) {
-                            acc03 = _mm256_sub_epi32(acc03, xvec0);
-                            acc13 = _mm256_sub_epi32(acc13, xvec1);
-                        }
-                    }
+                    q8_ocblock4_oh2_dispatch(bucket, oh, ow, xq_h, xq_w, data,
+                        acc00, acc01, acc02, acc03, acc10, acc11, acc12, acc13);
                 }
 
-                __m256 y00 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc00), _mm256_set1_ps(out_scale0)), _mm256_set1_ps(bias0));
-                __m256 y01 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc01), _mm256_set1_ps(out_scale1)), _mm256_set1_ps(bias1));
-                __m256 y02 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc02), _mm256_set1_ps(out_scale2)), _mm256_set1_ps(bias2));
-                __m256 y03 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc03), _mm256_set1_ps(out_scale3)), _mm256_set1_ps(bias3));
-                __m256 y10 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc10), _mm256_set1_ps(out_scale0)), _mm256_set1_ps(bias0));
-                __m256 y11 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc11), _mm256_set1_ps(out_scale1)), _mm256_set1_ps(bias1));
-                __m256 y12 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc12), _mm256_set1_ps(out_scale2)), _mm256_set1_ps(bias2));
-                __m256 y13 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc13), _mm256_set1_ps(out_scale3)), _mm256_set1_ps(bias3));
+                __m256 y00 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc00), s0_v), b0_v);
+                __m256 y01 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc01), s1_v), b1_v);
+                __m256 y02 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc02), s2_v), b2_v);
+                __m256 y03 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc03), s3_v), b3_v);
+                __m256 y10 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc10), s0_v), b0_v);
+                __m256 y11 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc11), s1_v), b1_v);
+                __m256 y12 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc12), s2_v), b2_v);
+                __m256 y13 = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(acc13), s3_v), b3_v);
 
                 if (apply_relu) {
                     y00 = _mm256_max_ps(y00, zero_v); y01 = _mm256_max_ps(y01, zero_v);
