@@ -404,3 +404,30 @@ target_compile_definitions(benchmark_q2q_layer23_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_layer23_stack PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_layer23_stack PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 6: full layer4 stack (layer4.0 + layer4.1), q8-to-q8 end-to-end.
+# Structurally identical to layer2/layer3 but at the network's largest K
+# (256->512, 512->512) and smallest spatial extent (7x7 = 49 output pixels).
+# Tests whether dense VNNI's per-MAC throughput edge (favored by large K)
+# outweighs fixed per-pixel pack/loop overhead (amortized over far fewer
+# pixels than layer2/layer3) -- empirical, not assumed. Reuses every kernel
+# byte-for-byte from the layer2/layer3 stack benchmarks. Gate: q2q_only must
+# beat the measured basic_engine layer4 stack (~9.59 ms, q8 OCBlock2 bucket,
+# 1T).
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_layer4_stack
+    src/q2q_engine/benchmark_q2q_layer4_stack.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_layer4_stack PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_layer4_stack PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_layer4_stack PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_layer4_stack PRIVATE OpenMP::OpenMP_CXX)
