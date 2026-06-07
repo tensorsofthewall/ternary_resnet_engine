@@ -249,6 +249,8 @@ that profiling insight:
    `vpdpbusd`), in a layout (NHWC/q8) that's natural for that instruction (see "Q2Q / VNNI
    Engine" and "Why Q2Q/VNNI outperforms the sparse engine"). This is the change that
    produced the final, ORT-beating result.
+  
+I also treated `bitnet.cpp` as a strategy reference for low-bit kernel design — primarily the idea that low-bit models benefit from explicit packing/layout and custom kernels — but did not reuse or depend on any of its code.
 
 In short: the first two investigation lines used the profiling feedback to *characterize*
 the ceiling precisely (and are documented in full, including the negative results, because
