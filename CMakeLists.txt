@@ -521,3 +521,77 @@ target_compile_definitions(benchmark_q2q_hybrid_trunk PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_hybrid_trunk PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_hybrid_trunk PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 10a: conv1 + maxpool in q8/VNNI.
+# conv1 (IC=3, 7x7, stride=2, pad=3) breaks the IC % K_CHUNK == 0 assumption
+# behind every dense Q2Q panel kernel, so this benchmark packs an im2col-style
+# "A-panel" per output pixel (flattening (ic,ky,kx) -> one 160-lane K axis,
+# zero-padded past K_full=147) and streams the existing dpbusd_epi32 OC_TILE=4
+# VNNI core over it -- no ky/kx loop needed, the gather already encodes the
+# spatial offsets. maxpool runs directly on q8 data (shared static ACT_SCALE
+# makes max(uint8) track max(fp32) under the monotonic affine map). Needs the
+# full resnet18_engine.cpp dependency chain to measure the basic_engine
+# conv1+maxpool baseline live via forward_resnet18_workspace_timed.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_conv1_maxpool
+    src/q2q_engine/benchmark_q2q_conv1_maxpool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/resnet18_engine.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_avx2.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock2_avx2.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock4_avx2.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_avx2.cpp
+    src/basic_engine/quantized/quant_utils.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock4_avx2.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock2_avx2.cpp
+    src/basic_engine/quantized/conv1x1_q8_s2_avx2.cpp
+)
+target_include_directories(benchmark_q2q_conv1_maxpool PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_conv1_maxpool PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_conv1_maxpool PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_conv1_maxpool PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 10b: full Q2Q-ish forward prefix (FP32 in -> logits out, all-Q2Q
+# trunk). Chains: quantize -> conv1(Q2Q im2col VNNI, Phase 10a) -> maxpool(q8)
+# -> layer1(Q2Q) -> layer2-4(Q2Q) -> dequant -> basic_engine avgpool+fc. Every
+# conv from conv1 through layer4 runs in q8/VNNI; basic_engine is touched only
+# via its public ops (avgpool/fc) and for the live full-model gate baseline.
+# Needs the full resnet18_engine.cpp dependency chain for that baseline.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_full_prefix
+    src/q2q_engine/benchmark_q2q_full_prefix.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/resnet18_engine.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_avx2.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock2_avx2.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock4_avx2.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_avx2.cpp
+    src/basic_engine/quantized/quant_utils.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock4_avx2.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock2_avx2.cpp
+    src/basic_engine/quantized/conv1x1_q8_s2_avx2.cpp
+)
+target_include_directories(benchmark_q2q_full_prefix PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_full_prefix PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_full_prefix PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_full_prefix PRIVATE OpenMP::OpenMP_CXX)
