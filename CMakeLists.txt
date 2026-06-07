@@ -262,3 +262,24 @@ target_compile_definitions(benchmark_cbhwb PRIVATE NDEBUG)
 target_compile_options(benchmark_cbhwb PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma)
 target_link_libraries(benchmark_cbhwb PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# benchmark_w16w32: wider-tile blocked sparse OC2 kernels (runtime-only).
+# Variant A: W_BLOCK=16 OW_TILE=16. Variant B: W_BLOCK=32 OW_TILE=32.
+# Layer2.1.conv2 only. No correctness check. Lives alongside blocked_engine.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_w16w32
+    src/blocked_engine/benchmark_w16w32.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_w16w32 PRIVATE src/basic_engine src/blocked_engine)
+target_compile_definitions(benchmark_w16w32 PRIVATE NDEBUG)
+target_compile_options(benchmark_w16w32 PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma)
+target_link_libraries(benchmark_w16w32 PRIVATE OpenMP::OpenMP_CXX)
