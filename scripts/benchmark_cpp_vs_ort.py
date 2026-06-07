@@ -214,7 +214,7 @@ def print_stats(label: str, stats: dict[str, float]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Benchmark C++ ternary engine vs ONNX Runtime FP32/INT8."
+        description="Benchmark basic engine, optimized Q2Q/VNNI, and ONNX Runtime FP32/INT8."
     )
 
     parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts"))

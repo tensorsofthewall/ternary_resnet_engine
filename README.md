@@ -70,7 +70,7 @@ OMP_NUM_THREADS=1 ./build/benchmark_q2q_full_prefix_optimized \
   artifacts/model_ternary_i8_weights_v1.bin --threads 1
 ```
 
-This prints a `C++ engine latency` block (`min_ms`/`median_ms`/`mean_ms`/`p90_ms`) —
+This prints the `C++ engine latency` block (`min_ms`/`median_ms`/`mean_ms`/`p90_ms`) —
 expect a median around **~14.8 ms at 1 thread**, vs. `basic_engine`'s ~45 ms and ORT
 INT8's ~19.7 ms (see "Current Benchmark Results" for the full thread sweep, and "C++ vs
 ONNX Runtime Benchmark" for the side-by-side comparison script that produces those
@@ -503,6 +503,7 @@ input = 3×224×224
 
 All values are **min ms / median ms** over 100 timed runs after 20 warmup runs.
 Numbers from `logs/cpp_vs_ort_20260607_155807.csv` and `logs/pytorch_fp32_20260607_155922.csv`.
+The exact numbers may vary with CPU governor, thermals, and background load; the reported table was collected from the log files listed above on the stated i7-12800HX system.
 
 | Threads | basic_engine | **Q2Q/VNNI engine** | ORT INT8 | ORT FP32 | PyTorch FP32 |
 |---:|---:|---:|---:|---:|---:|
