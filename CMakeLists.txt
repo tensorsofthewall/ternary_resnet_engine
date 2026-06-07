@@ -709,6 +709,15 @@ if(BUILD_Q2Q_FINAL)
 
 add_executable(benchmark_q2q_full_prefix_optimized
     src/q2q_engine/benchmark_q2q_full_prefix_optimized.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_weight_panel.cpp
+    src/q2q_engine/q2q_conv_vnni.cpp
+    src/q2q_engine/q2q_conv1_vnni.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/q2q_engine/q2q_residual.cpp
+    src/q2q_engine/q2q_resnet18.cpp
     src/basic_engine/model_loader.cpp
     src/basic_engine/ops.cpp
     src/basic_engine/resnet18_engine.cpp

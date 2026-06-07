@@ -1,0 +1,82 @@
+#include "q2q_residual.hpp"
+
+#include "q2q_quant.hpp"
+
+#include <immintrin.h>
+#include <omp.h>
+
+namespace q2q {
+
+void q2q_residual_add_relu(
+    const QTensorNHWC& a, const QTensorNHWC& b,
+    float out_scale, int H, int W, int C, QTensorNHWC& y)
+{
+    const float inv_out_scale = 1.0f / out_scale;
+    const float sa = a.scale, sb = b.scale;
+    const uint8_t* abase = a.data.data();
+    const uint8_t* bbase = b.data.data();
+    uint8_t* ybase = y.data.data();
+
+    for (int h = 0; h < H; ++h) {
+        const uint8_t* a_row = abase + ((size_t)(h + a.border) * a.W + a.border) * C;
+        const uint8_t* b_row = bbase + ((size_t)(h + b.border) * b.W + b.border) * C;
+        uint8_t*       y_row = ybase + ((size_t)(h + y.border) * y.W + y.border) * C;
+        for (int w = 0; w < W; ++w) {
+            const uint8_t* ap = a_row + (size_t)w * C;
+            const uint8_t* bp = b_row + (size_t)w * C;
+            uint8_t*       yp = y_row + (size_t)w * C;
+            for (int c = 0; c < C; ++c) {
+                float sum = static_cast<float>(ap[c]) * sa + static_cast<float>(bp[c]) * sb;
+                sum = sum < 0.f ? 0.f : sum;
+                yp[c] = requantize_u8(sum, inv_out_scale);
+            }
+        }
+    }
+}
+
+void q2q_residual_add_relu_avx2(
+    const QTensorNHWC& a, const QTensorNHWC& b,
+    float out_scale, int H, int W, int C, QTensorNHWC& y)
+{
+    const float inv_out_scale = 1.0f / out_scale;
+    const __m256 sa_v   = _mm256_set1_ps(a.scale);
+    const __m256 sb_v   = _mm256_set1_ps(b.scale);
+    const __m256 inv_os = _mm256_set1_ps(inv_out_scale);
+    const __m256 zero   = _mm256_setzero_ps();
+    const __m256i max255 = _mm256_set1_epi32(255);
+    const uint8_t* abase = a.data.data();
+    const uint8_t* bbase = b.data.data();
+    uint8_t* ybase = y.data.data();
+
+    // Phase 12: parallelize over the flattened (h, w) element-tile space --
+    // collapsing both spatial dims (rather than just rows) keeps every thread
+    // fed even for layer4's small H*W=49; each (h,w) tile writes a disjoint
+    // C-channel run of the output, so there are no races.
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int h = 0; h < H; ++h) {
+        for (int w = 0; w < W; ++w) {
+            const uint8_t* ap = abase + ((size_t)(h + a.border) * a.W + a.border) * C + (size_t)w * C;
+            const uint8_t* bp = bbase + ((size_t)(h + b.border) * b.W + b.border) * C + (size_t)w * C;
+            uint8_t*       yp = ybase + ((size_t)(h + y.border) * y.W + y.border) * C + (size_t)w * C;
+            for (int c = 0; c < C; c += 8) {
+                const __m128i a8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(ap + c));
+                const __m128i b8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(bp + c));
+                const __m256 af = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(a8));
+                const __m256 bf = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(b8));
+                __m256 sum = _mm256_fmadd_ps(af, sa_v, _mm256_mul_ps(bf, sb_v));
+                sum = _mm256_max_ps(sum, zero);
+                const __m256 scaled = _mm256_mul_ps(sum, inv_os);
+                __m256i qi = _mm256_cvtps_epi32(scaled);
+                qi = _mm256_max_epi32(qi, _mm256_setzero_si256());
+                qi = _mm256_min_epi32(qi, max255);
+                const __m128i lo = _mm256_castsi256_si128(qi);
+                const __m128i hi = _mm256_extracti128_si256(qi, 1);
+                const __m128i packed16 = _mm_packus_epi32(lo, hi);
+                const __m128i packed8  = _mm_packus_epi16(packed16, packed16);
+                _mm_storel_epi64(reinterpret_cast<__m128i*>(yp + c), packed8);
+            }
+        }
+    }
+}
+
+} // namespace q2q
