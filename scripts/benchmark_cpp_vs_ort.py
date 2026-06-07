@@ -43,17 +43,22 @@ def compute_stats(times_ms: list[float]) -> dict[str, float]:
     }
 
 
-def configure_thread_env(threads: int) -> None:
-    # Keep non-ORT threadpools from oversubscribing.
-    os.environ["OMP_NUM_THREADS"] = str(threads)
-    os.environ["OMP_PROC_BIND"] = "close"
-    os.environ["OMP_PLACES"] = "cores"
-    os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"
-    os.environ["OMP_NESTED"] = "FALSE"
+def cpp_subprocess_env_vars(threads: int) -> dict[str, str]:
+    # Keep non-target threadpools from oversubscribing; pin OpenMP to `threads`.
+    return {
+        "OMP_NUM_THREADS": str(threads),
+        "OMP_PROC_BIND": "close",
+        "OMP_PLACES": "cores",
+        "OMP_MAX_ACTIVE_LEVELS": "1",
+        "OMP_NESTED": "FALSE",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+    }
 
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+def configure_thread_env(threads: int) -> None:
+    os.environ.update(cpp_subprocess_env_vars(threads))
 
 
 def benchmark_ort(
@@ -124,20 +129,41 @@ def benchmark_cpp_engine(
     threads: int,
 ) -> dict[str, float]:
     env = os.environ.copy()
-    env["OMP_NUM_THREADS"] = str(threads)
-    env["OMP_PROC_BIND"] = "close"
-    env["OMP_PLACES"] = "cores"
-    env["OMP_MAX_ACTIVE_LEVELS"] = "1"
-    env["OMP_NESTED"] = "FALSE"
-    env["OPENBLAS_NUM_THREADS"] = "1"
-    env["MKL_NUM_THREADS"] = "1"
-    env["NUMEXPR_NUM_THREADS"] = "1"
+    env.update(cpp_subprocess_env_vars(threads))
 
     cmd = [
         str(engine_path),
         str(model_bin),
         str(input_bin),
         str(golden_logits_bin),
+    ]
+
+    result = subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    return parse_cpp_engine_stats(result.stdout)
+
+
+def benchmark_q2q_engine(
+    engine_path: Path,
+    model_bin: Path,
+    threads: int,
+) -> dict[str, float]:
+    env = os.environ.copy()
+    env.update(cpp_subprocess_env_vars(threads))
+
+    # The Q2Q binary takes its thread count via --threads (it calls
+    # omp_set_num_threads itself), not just via OMP_NUM_THREADS.
+    cmd = [
+        str(engine_path),
+        str(model_bin),
+        "--threads",
+        str(threads),
     ]
 
     result = subprocess.run(
@@ -193,6 +219,12 @@ def main() -> None:
 
     parser.add_argument("--artifact-dir", type=Path, default=Path("artifacts"))
     parser.add_argument("--engine", type=Path, default=Path("build/basic_engine"))
+    parser.add_argument(
+        "--q2q-engine",
+        type=Path,
+        default=Path("build/benchmark_q2q_full_prefix_optimized"),
+        help="Path to the optimized Q2Q/VNNI full-prefix benchmark binary.",
+    )
     parser.add_argument("--runs", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--calib-samples", type=int, default=32)
@@ -213,6 +245,11 @@ def main() -> None:
         "--skip-ort-fp32",
         action="store_true",
         help="Only benchmark C++ and ORT INT8.",
+    )
+    parser.add_argument(
+        "--skip-q2q",
+        action="store_true",
+        help="Skip the optimized Q2Q/VNNI engine benchmark.",
     )
     parser.add_argument(
         "--build",
@@ -255,6 +292,9 @@ def main() -> None:
         input_npy,
     ]
 
+    if not args.skip_q2q:
+        required_paths.append(args.q2q_engine)
+
     for path in required_paths:
         if not path.exists():
             raise FileNotFoundError(f"Missing required file: {path}")
@@ -296,7 +336,7 @@ def main() -> None:
             threads=threads,
         )
 
-        print_stats("C++ engine", cpp_stats)
+        print_stats("C++ engine (basic_engine)", cpp_stats)
         print()
 
         rows.append({
@@ -304,6 +344,22 @@ def main() -> None:
             "runtime": "cpp_engine",
             **cpp_stats,
         })
+
+        if not args.skip_q2q:
+            q2q_stats = benchmark_q2q_engine(
+                engine_path=args.q2q_engine,
+                model_bin=model_bin,
+                threads=threads,
+            )
+
+            print_stats("C++ engine (Q2Q/VNNI optimized)", q2q_stats)
+            print()
+
+            rows.append({
+                "threads": threads,
+                "runtime": "q2q_engine",
+                **q2q_stats,
+            })
 
         if not args.skip_ort_fp32:
             fp32_stats = benchmark_ort(

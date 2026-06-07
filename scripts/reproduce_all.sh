@@ -46,8 +46,8 @@ OMP_NUM_THREADS=1 ./build/basic_engine \
     artifacts/golden_logits_fp32.bin
 echo
 
-# ── Step 5: C++ vs ORT benchmark ─────────────────────────────────────────────
-echo "==> [5/6] C++ vs ORT benchmark (threads: $THREADS)..."
+# ── Step 5: C++ (basic_engine + Q2Q/VNNI) vs ORT FP32/INT8 benchmark ─────────
+echo "==> [5/6] C++ (basic_engine + Q2Q/VNNI) vs ORT FP32/INT8 benchmark (threads: $THREADS)..."
 $PYTHON scripts/benchmark_cpp_vs_ort.py \
     --threads $THREADS \
     --runs "$RUNS" \

@@ -1022,6 +1022,13 @@ int main(int argc, char* argv[]) {
                       << " ms >= " << basic_full_ms << " ms)\n";
         }
 
+        std::cout << "\nC++ engine latency\n";
+        std::cout << "  runs:      " << N_TIMED << "\n";
+        std::cout << "  min_ms:    " << so.front() << "\n";
+        std::cout << "  median_ms: " << med_optimized << "\n";
+        std::cout << "  mean_ms:   " << (std::accumulate(so.begin(), so.end(), 0.0) / N_TIMED) << "\n";
+        std::cout << "  p90_ms:    " << so[N_TIMED * 9 / 10] << "\n";
+
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
