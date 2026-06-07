@@ -1,4 +1,4 @@
-// benchmark_q2q_conv1_maxpool.cpp — Q2Q Phase 10a: conv1 + maxpool in q8/VNNI
+// benchmark_q2q_conv1_maxpool.cpp — conv1 + maxpool in q8/VNNI
 //
 // Extends the Q2Q/VNNI path to the network's FIRST two ops -- conv1 (7x7,
 // stride=2, IC=3, OC=64, pad=3) and the following 3x3/stride=2/pad=1 maxpool.

@@ -1,6 +1,6 @@
-// benchmark_q2q_layer4_stack.cpp — Q2Q/VNNI Phase 6: full layer4 stack (q8-to-q8)
+// benchmark_q2q_layer4_stack.cpp — Q2Q/VNNI: full layer4 stack (q8-to-q8)
 //
-// Extends the validated Phase 4/5 path to the layer4 stack — structurally
+// Extends the validated layer3/layer23 path to the layer4 stack — structurally
 // identical to layer2/layer3 (conv1 s2, conv2 s1, 1x1 s2 downsample, q8
 // residual add+ReLU) but at the network's largest K (256->512, 512->512) and
 // smallest spatial extent (7x7 output). This phase empirically tests the

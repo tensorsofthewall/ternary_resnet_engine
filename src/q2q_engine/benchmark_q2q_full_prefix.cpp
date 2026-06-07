@@ -1,4 +1,4 @@
-// benchmark_q2q_full_prefix.cpp — Q2Q Phase 10b: full Q2Q-ish forward prefix
+// benchmark_q2q_full_prefix.cpp — full Q2Q-ish forward prefix
 //
 //   FP32 input -> quantize -> conv1 (Q2Q im2col VNNI) -> maxpool (q8 direct)
 //     -> layer1 (Q2Q) -> layer2-4 (Q2Q) -> dequant -> basic_engine avgpool+fc
@@ -24,7 +24,7 @@
 //
 // Kernel provenance (reused, not retuned):
 //   - conv1 im2col panel + kernel, q8 maxpool: byte-for-byte from
-//     benchmark_q2q_conv1_maxpool.cpp (Phase 10a)
+//     benchmark_q2q_conv1_maxpool.cpp
 //   - q2q_conv_bn_requant / vnni_oc4_dots / q2q_residual_add_relu /
 //     build_oc4_k32_panel: byte-for-byte from benchmark_q2q_layer234_stack.cpp,
 //     modulo the PAD -> {x,y}.border generalization described above (a no-op
@@ -135,7 +135,7 @@ static inline uint8_t requantize_u8(float v, float inv_out_scale) {
 
 // =====================================================================
 // conv1: im2col "A-panel" + VNNI -- byte-for-byte from
-// benchmark_q2q_conv1_maxpool.cpp (Phase 10a). IC=3 breaks the
+// benchmark_q2q_conv1_maxpool.cpp. IC=3 breaks the
 // IC % K_CHUNK == 0 assumption behind every dense Q2Q panel, so the
 // receptive field (IC*KH*KW = 147, padded to K_PAD=160 = 5*32) is
 // flattened into a single K axis at pack time; the VNNI core then just
@@ -781,10 +781,10 @@ int main(int argc, char* argv[]) {
         } else {
             std::cout << "  RESULT: full Q2Q-ish prefix (" << med_total << " ms) does NOT beat basic_engine ("
                       << basic_full_ms << " ms) -- " << (med_total / basic_full_ms)
-                      << "x slower. The conv1 im2col kernel's ~2x deficit (Phase 10a) and layer1's "
-                         "marginal Q2Q result (Phase 8, ~1.03x) drag down the otherwise-winning "
-                         "layer2-4 trunk; the hybrid split (basic conv1/maxpool/layer1 + Q2Q layer2-4, "
-                         "Phase 9) remains the better measured strategy.\n";
+                      << "x slower. The conv1 im2col kernel's ~2x deficit (see benchmark_q2q_conv1_maxpool.cpp) "
+                         "and layer1's marginal Q2Q result (~1.03x, see benchmark_q2q_layer1_stack.cpp) drag "
+                         "down the otherwise-winning layer2-4 trunk; the hybrid split (basic conv1/maxpool/layer1 "
+                         "+ Q2Q layer2-4, see benchmark_q2q_hybrid_trunk.cpp) remains the better measured strategy.\n";
         }
 
     } catch (const std::exception& e) {

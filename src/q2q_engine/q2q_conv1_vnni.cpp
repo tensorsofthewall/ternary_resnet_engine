@@ -38,7 +38,7 @@ void q2q_conv1_im2col_bn_relu_requant(
         }
     }
 
-    // Phase 12: parallelize over output rows (M = OH*OW = 12544 >> 196, so a
+    // Parallelize over output rows (M = OH*OW = 12544 >> 196, so a
     // row-granularity m_tile gives every thread plenty of independent work).
     // Each thread packs its OWN a_panel buffer once (outside the #pragma omp
     // for) and reuses it across all rows it's assigned -- "thread-local A-panel,

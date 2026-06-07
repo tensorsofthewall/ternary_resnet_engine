@@ -16,6 +16,10 @@ struct BlockedModel {
     const Model* model = nullptr;  // lifetime must exceed BlockedModel
 };
 
+// Builds blocked (16x16-tiled) weight copies for every conv in `m` whose
+// in/out channel counts are multiples of 16 (i.e. every conv except conv1,
+// which keeps its dense Conv2DParams form and is handled by
+// blocked_conv1_7x7_s2). `bm.model` aliases `m` -- `m` must outlive `bm`.
 BlockedModel build_blocked_model(const Model& m);
 
 // Pre-allocated activation buffers for one forward pass.
@@ -42,7 +46,7 @@ struct BlockedEngineWorkspace {
 
 // Run one full ResNet18 forward pass with the reference scalar kernels.
 // Returns softmax probabilities (1000 values).
-// timings is filled with wall-clock ms per named section (may be empty in Phase 4).
+// timings is filled with wall-clock ms per named section (may be left empty by the caller).
 std::vector<float> forward_blocked_resnet18(
     const BlockedModel& bm,
     const Tensor& input,

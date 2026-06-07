@@ -1,8 +1,9 @@
-// benchmark_q2q_layer3_stack.cpp — Q2Q/VNNI Phase 4: full layer3 stack (q8-to-q8)
+// benchmark_q2q_layer3_stack.cpp — Q2Q/VNNI: full layer3 stack (q8-to-q8)
 //
-// Extends the validated Phase 3 layer2 stack (basic_engine 10.28ms -> q2q_only
-// 6.95ms, 1.48x) to the full layer3 stack, structurally identical but with
-// larger channel counts (K doubles: 128->256, 256->256) — testing whether
+// Extends the validated layer2 stack (see benchmark_q2q_layer2_stack.cpp:
+// basic_engine 10.28ms -> q2q_only 6.95ms, 1.48x) to the full layer3 stack,
+// structurally identical but with larger channel counts (K doubles:
+// 128->256, 256->256) — testing whether
 // VNNI's per-MAC throughput advantage grows with K, as it should (more dpbusd
 // issues per loaded panel row, same fixed per-pixel epilogue overhead):
 //
@@ -165,7 +166,7 @@ struct PanelStrides {
 // to the accumulation itself ("do not tune the microkernel"):
 //   ih = oh*stride + ky + read_offset,  read_offset = PAD - conv.pad_h
 // For a stride-1, pad=PAD conv (e.g. any 3x3/pad=1) read_offset=0, recovering
-// exactly the Phase 1/2 indexing `ih = oh + ky`.
+// the original simple indexing `ih = oh + ky`.
 static inline void vnni_oc4_dots(
     const uint8_t* base_in, int W_PAD_IN, int C_IN,
     const int8_t* panel_tile, const PanelStrides& st,
@@ -263,7 +264,7 @@ static void q2q_conv_bn_requant(
 }
 
 // ---- q8 residual add + ReLU: QTensorNHWC + QTensorNHWC -> QTensorNHWC ----
-// (unchanged from Phase 2/3 — reused verbatim for both layer3.0 and layer3.1)
+// (unchanged from earlier stack benchmarks — reused verbatim for both layer3.0 and layer3.1)
 static void q2q_residual_add_relu(
     const QTensorNHWC& a, const QTensorNHWC& b,
     float out_scale, int H, int W, int C, QTensorNHWC& y)

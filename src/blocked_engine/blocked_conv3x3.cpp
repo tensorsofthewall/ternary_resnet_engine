@@ -105,7 +105,7 @@ void blocked_conv1x1_s2_ref(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5 — AVX2 sign_epi32 kernel
+// AVX2 sign_epi32 kernel
 // sign_epi32(av, w): returns av when w>0, -av when w<0, 0 when w==0.
 // Exactly equivalent to mullo(av, w) for w in {-1, 0, +1}. Latency: 1 cycle.
 // ---------------------------------------------------------------------------

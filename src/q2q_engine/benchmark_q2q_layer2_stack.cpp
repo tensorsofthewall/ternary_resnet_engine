@@ -1,7 +1,7 @@
-// benchmark_q2q_layer2_stack.cpp — Q2Q/VNNI Phase 3: full layer2 stack (q8-to-q8)
+// benchmark_q2q_layer2_stack.cpp — Q2Q/VNNI: full layer2 stack (q8-to-q8)
 //
-// Extends the validated Phase 2 layer2.1 q8-to-q8 block (basic_engine 5.42ms ->
-// q2q_only 3.27ms, 1.66x) to the full layer2 stack:
+// Extends the validated layer2.1 q8-to-q8 block (see benchmark_q2q_block.cpp:
+// basic_engine 5.42ms -> q2q_only 3.27ms, 1.66x) to the full layer2 stack:
 //
 //   layer2.0: conv1(3x3,s2) + BN + ReLU  -> q8
 //             conv2(3x3,s1) + BN         -> q8
@@ -20,7 +20,7 @@
 // Kernel reuse ("do not tune the microkernel"): ONE fused conv kernel
 // (q2q_conv_bn_requant) serves all FIVE convs in this stack — conv1 s2 3x3,
 // conv2 s1 3x3, downsample s2 1x1, and layer2.1's conv1/conv2. The only
-// generalization versus Phase 2 is deriving `stride` and a `read_offset`
+// generalization versus the layer2.1 block is deriving `stride` and a `read_offset`
 // (reconciling the tensor's fixed PAD=1 border against each conv's own
 // pad_h, e.g. 0 for the 1x1 downsample) directly from Conv2DParams — the
 // dpbusd accumulation core is untouched.
@@ -170,7 +170,7 @@ struct PanelStrides {
 // to the accumulation itself ("do not tune the microkernel"):
 //   ih = oh*stride + ky + read_offset,  read_offset = PAD - conv.pad_h
 // For a stride-1, pad=PAD conv (e.g. any 3x3/pad=1) read_offset=0, recovering
-// exactly the Phase 1/2 indexing `ih = oh + ky`.
+// the original simple indexing `ih = oh + ky`.
 static inline void vnni_oc4_dots(
     const uint8_t* base_in, int W_PAD_IN, int C_IN,
     const int8_t* panel_tile, const PanelStrides& st,
@@ -268,7 +268,7 @@ static void q2q_conv_bn_requant(
 }
 
 // ---- q8 residual add + ReLU: QTensorNHWC + QTensorNHWC -> QTensorNHWC ----
-// (unchanged from Phase 2 — reused verbatim for both layer2.0 and layer2.1)
+// (unchanged from benchmark_q2q_block.cpp — reused verbatim for both layer2.0 and layer2.1)
 static void q2q_residual_add_relu(
     const QTensorNHWC& a, const QTensorNHWC& b,
     float out_scale, int H, int W, int C, QTensorNHWC& y)

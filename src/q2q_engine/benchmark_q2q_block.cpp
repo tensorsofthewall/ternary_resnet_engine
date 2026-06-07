@@ -1,6 +1,6 @@
-// benchmark_q2q_block.cpp — Q2Q/VNNI Phase 2: layer2.1 q8-to-q8 residual block
+// benchmark_q2q_block.cpp — Q2Q/VNNI: layer2.1 q8-to-q8 residual block
 //
-// Goal: chain the validated VNNI dense-ternary kernel (Phase 1: compute_med
+// Goal: chain the validated VNNI dense-ternary kernel (compute_med
 // 0.90ms, total_med 1.59ms on layer2.1.conv2 alone) into a *true* q8-to-q8
 // residual block — every activation tensor on the conv1->conv2->residual path
 // is QTensorNHWC (uint8 NHWC + scale). No FP32 activation tensor is ever
@@ -13,9 +13,9 @@
 //     -> q8 residual add (+ dequant) + ReLU + requantize    -> q8   (QTensorNHWC, QTensorNHWC -> QTensorNHWC)
 //
 // Both convs reuse ONE fused kernel (q2q_conv_bn_requant), parameterized by a
-// `relu` flag — "do not tune the microkernel first": this is the unmodified
-// Phase 1 dense OC4/K32 dpbusd accumulation, just with the epilogue switched
-// from "dequant to FP32" to "dequant -> (relu) -> requantize to u8".
+// `relu` flag — kept as the unmodified validated dense OC4/K32 dpbusd
+// accumulation, just with the epilogue switched from "dequant to FP32" to
+// "dequant -> (relu) -> requantize to u8".
 //
 // Quantization scale is a single fixed placeholder constant ACT_SCALE used
 // for every activation tensor (static/calibrated-style quantization — no
@@ -110,7 +110,7 @@ static void fill_random_fp32_nonneg(float* dst, size_t n, uint32_t seed, float v
 }
 
 // ---- Dense ternary weight panel: [oc_tile][ky][kx][ic_chunk][oc_in_tile][32] ----
-// (identical packing to Phase 1's build_oc4_k32_panel — generic over Conv2DParams)
+// (identical packing to the validated build_oc4_k32_panel — generic over Conv2DParams)
 static std::vector<int8_t> build_oc4_k32_panel(const Conv2DParams& conv) {
     const int IC = conv.in_channels, OC = conv.out_channels;
     const int KH = conv.kh, KW = conv.kw;
@@ -169,8 +169,7 @@ struct PanelStrides {
 };
 
 // Computes the 4 OC-tile dot products (int32) for one output pixel via VNNI
-// dpbusd accumulation — unmodified Phase 1 dense kernel core ("do not tune
-// the microkernel first").
+// dpbusd accumulation — the unmodified validated dense kernel core.
 static inline void vnni_oc4_dots(
     const uint8_t* base_in, int W_PAD_IN, int C_IN,
     const int8_t* panel_tile, const PanelStrides& st,

@@ -14,7 +14,7 @@ void q8_maxpool_3x3_s2_p1(const QTensorNHWC& x, int OH, int OW, QTensorNHWC& y) 
     const uint8_t* base_in  = x.data.data();
     uint8_t*       base_out = y.data.data();
 
-    // Phase 12: parallelize over output rows -- each row reads an overlapping
+    // Parallelize over output rows -- each row reads an overlapping
     // (read-only, safe) 3-row band of the input and writes a disjoint output
     // row, so there are no races.
     #pragma omp parallel for schedule(static)

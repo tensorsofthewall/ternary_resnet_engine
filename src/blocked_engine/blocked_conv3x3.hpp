@@ -29,7 +29,7 @@ void blocked_conv1x1_s2_ref(
     bool relu,
     BlockedTensorFP32& output);
 
-// Phase 5 — AVX2 sign_epi32 mullo kernel.
+// AVX2 sign_epi32 mullo kernel.
 // Loop order: (oc_cb, oh, ow) outer → (ic_cb, ky, kx, ci_in) inner.
 // acc_lo/acc_hi stay in YMM registers. Skips zero activations.
 void blocked_conv3x3_s1_avx2(

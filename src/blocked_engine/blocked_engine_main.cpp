@@ -1,12 +1,12 @@
 // Blocked engine: NCHWc16 activations + mullo_epi32 ternary conv prototype.
-// Phase 4: full ResNet18 forward pass with reference scalar kernels.
-// Phase 5 will replace the hot conv3x3 paths with AVX2 mullo kernels.
+// Full ResNet18 forward pass, with the hot conv3x3 paths on AVX2 mullo kernels
+// and the remaining ops on reference scalar kernels.
 //
 // Usage: ./blocked_engine <model.bin> <input_fp32.bin>
 //
-// Note: the reference (scalar) kernels are unoptimized. Phase 4 establishes
-// correctness and end-to-end timing for the scalar baseline. Phase 5 adds
-// the AVX2 mullo_epi32 kernel which should bring total_ms close to basic_engine.
+// Note: the reference (scalar) kernels are unoptimized -- they establish
+// correctness and end-to-end timing for the scalar baseline, while the AVX2
+// mullo_epi32 kernel on conv3x3 brings total_ms close to basic_engine.
 
 #include "blocked_model.hpp"
 #include "blocked_resnet18.hpp"

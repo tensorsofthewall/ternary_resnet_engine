@@ -1,4 +1,4 @@
-// benchmark_q2q_hybrid_trunk.cpp — Q2Q Phase 9: hybrid basic+Q2Q full trunk
+// benchmark_q2q_hybrid_trunk.cpp — hybrid basic+Q2Q full trunk
 //
 // Builds and MEASURES (not estimates) a hybrid forward path:
 //
@@ -9,8 +9,8 @@
 //   -> dequant to FP32 NCHW [512,7,7]
 //   basic_engine ops (read-only, public): adaptive_avgpool_1x1 + linear (fc)
 //
-// The layer1 Q2Q benchmark (Phase 8) was marginal (~1.03x, loses with input
-// convert), so layer1 stays on basic_engine here, per spec.
+// The layer1 Q2Q benchmark (see benchmark_q2q_layer1_stack.cpp) was marginal
+// (~1.03x, loses with input convert), so layer1 stays on basic_engine here.
 //
 // To capture the REAL FP32 activation at the layer1/layer2 boundary without
 // touching basic_engine, this benchmark runs ONE forward pass through the

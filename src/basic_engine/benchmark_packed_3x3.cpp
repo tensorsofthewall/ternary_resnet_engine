@@ -1,7 +1,7 @@
-// Phase 1: standalone benchmark harness for the packed sparse 3x3 kernel.
+// Standalone benchmark harness for the packed sparse 3x3 kernel.
 //
 // Compares the current q8 OCBlock2 bucket kernel against the packed sparse
-// activation-panel kernel (Phase 2) on a single captured layer activation.
+// activation-panel kernel on a single captured layer activation.
 //
 // Usage:
 //   ./build/benchmark_packed_3x3 <model.bin> [<input_fp32.bin>]
@@ -404,7 +404,7 @@ static void benchmark_layer(
     } else if (spec.ic == 128) {
         std::cout << "\n  packed OC_TILE=2/4: not tested (layer2 final test, OC_TILE=1 only)\n";
     } else {
-        std::cout << "\n  packed OC_TILE=2/4: skipped (layer4 ruled out in Phase 2)\n";
+        std::cout << "\n  packed OC_TILE=2/4: skipped (layer4 ruled out -- panel exceeds L1)\n";
     }
 
     std::cout << "\n  correctness (standalone bucket vs golden):\n";

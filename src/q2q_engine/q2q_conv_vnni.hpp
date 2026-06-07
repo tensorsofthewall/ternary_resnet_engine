@@ -12,6 +12,13 @@
 
 namespace q2q {
 
+// Computes the OC_TILE=4 dot products for one output pixel (oh,ow): walks the
+// KHxKW receptive field and IC_CHUNKS reduction chunks, accumulating four
+// VNNI dpbusd_epi32 lanes (one per output channel in the tile) and
+// horizontal-summing them into d0..d3. `panel_tile` must already point at
+// this oc_tile's slice of the weight panel; `st` gives its (ky,kx,icc)
+// strides. `read_offset = x.border - conv.pad_h` maps output coords to padded
+// input coords.
 static inline void vnni_oc4_dots(
     const uint8_t* base_in, int W_PAD_IN, int C_IN,
     const int8_t* panel_tile, const PanelStrides& st,
@@ -49,6 +56,12 @@ static inline void vnni_oc4_dots(
     d2 = hsum_epi32(acc2); d3 = hsum_epi32(acc3);
 }
 
+// Like vnni_oc4_dots, but computes two adjacent output pixels (ow, ow+1) at
+// once: for each loaded activation chunk, two overlapping a-vectors (offset
+// by one pixel, i.e. C_IN bytes) are each dotted against the same four
+// weight vectors, filling an 8-accumulator [2][OC_TILE] grid that amortizes
+// weight loads across both pixels. Requires stride==1 (the two reads must be
+// exactly one pixel apart). Results land in d[0][0..3] / d[1][0..3].
 static inline void vnni_oc4_n2_dots(
     const uint8_t* base_in, int W_PAD_IN, int C_IN,
     const int8_t* panel_tile, const PanelStrides& st,
@@ -90,11 +103,21 @@ static inline void vnni_oc4_n2_dots(
         for (int j = 0; j < OC_TILE; ++j) d[n][j] = hsum_epi32(acc[n][j]);
 }
 
+// Baseline dense q8 conv + fused BN + (optional) ReLU + requant, q8 in/out.
+// Single-threaded, oc_tile-major loop nest calling vnni_oc4_dots per pixel
+// and requantizing each lane with the scalar requantize_u8. `panel` is the
+// build_oc4_k32_panel-packed weight buffer for this layer.
 void q2q_conv_bn_requant(
     const QTensorNHWC& x, const std::vector<int8_t>& panel,
     const Conv2DParams& conv, const BNFusedParams& bn,
     bool relu, float out_scale, QTensorNHWC& y, int OH, int OW);
 
+// Tuned dense q8 conv + fused BN + (optional) ReLU + requant, q8 in/out.
+// OpenMP-parallel over the flattened (oc_tile, oh) task grid (collapse(2),
+// disjoint per-task output regions -- no races); uses the N=2-unrolled
+// vnni_oc4_n2_dots + SIMD epilogue_oc4_simd whenever stride==1 and OW is
+// even, falling back to the single-pixel vnni_oc4_dots path otherwise.
+// Numerically identical to q2q_conv_bn_requant, just faster.
 void q2q_conv_bn_requant_apanel(
     const QTensorNHWC& x, const std::vector<int8_t>& panel,
     const Conv2DParams& conv, const BNFusedParams& bn,

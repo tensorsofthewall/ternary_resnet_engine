@@ -45,4 +45,7 @@ struct BlockedConvWeights {
     }
 };
 
+// Repacks a Conv2DParams's dense ternary weight tensor (OC x IC x KH x KW)
+// into the 16x16 column-major tile layout described above. Requires
+// IC % 16 == 0 and OC % 16 == 0 (conv1, with IC=3, must use a different path).
 BlockedConvWeights build_blocked_conv_weights(const Conv2DParams& conv);

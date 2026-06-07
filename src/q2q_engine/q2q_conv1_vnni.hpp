@@ -34,6 +34,10 @@ static inline void conv1_gather_fast(
     }
 }
 
+// conv1 (7x7/stride=2) as im2col + VNNI dot products, with fused BN and a
+// ReLU+requant epilogue (q8 in, q8 out). OpenMP-parallel over output rows;
+// each thread gathers its own a_panel via conv1_gather_fast and reuses it
+// across every row it owns -- no allocation inside the parallel loop body.
 void q2q_conv1_im2col_bn_relu_requant(
     const QTensorNHWC& x, const Conv1Panel& panel,
     const Conv2DParams& conv, const BNFusedParams& bn,

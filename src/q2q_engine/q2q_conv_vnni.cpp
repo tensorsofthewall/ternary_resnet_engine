@@ -64,9 +64,9 @@ void q2q_conv_bn_requant(
 }
 
 // =====================================================================
-// OPTIMIZED dense conv -- Phase 10 items 3/5, byte-for-byte from
-// benchmark_q2q_microkernel_opt.cpp (validated there: ~2.08x / ~17x
-// paired wins). border-generic (q2q_conv_bn_requant_apanel uses x.border /
+// OPTIMIZED dense conv -- byte-for-byte from benchmark_q2q_microkernel_opt.cpp
+// (validated there: ~2.08x / ~17x paired wins). border-generic
+// (q2q_conv_bn_requant_apanel uses x.border /
 // y.border instead of a fixed PAD, matching the baseline's generalization;
 // every tensor it touches here has border=PAD_Q8=1, so this is a no-op).
 // epilogue_oc4_simd is shared with conv1.
@@ -101,7 +101,7 @@ void q2q_conv_bn_requant_apanel(
         b_all[oc] = bn.bias[oc];
     }
 
-    // Phase 12: parallelize over the flattened (oc_tile, oh) task space via
+    // Parallelize over the flattened (oc_tile, oh) task space via
     // collapse(2). Each task writes a disjoint OC_TILE-channel x one-output-row
     // region (oc_base..oc_base+3, row oh) -- no overlap, no races. Flattening
     // both dimensions (rather than just oh) gives every thread count plenty of

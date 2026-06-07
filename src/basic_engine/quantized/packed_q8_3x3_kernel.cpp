@@ -1,4 +1,4 @@
-// Phase 2: sparse pos/neg packed activation-panel kernel.
+// Sparse pos/neg packed activation-panel kernel.
 //
 // For each output row (oh):
 //   1. pack_a_panel: copy 14 (layer3) or 7 (layer4) consecutive i8 values per K position

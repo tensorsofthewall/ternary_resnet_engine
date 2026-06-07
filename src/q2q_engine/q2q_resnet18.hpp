@@ -109,6 +109,8 @@ Q2QResnet18Context build_q2q_resnet18_context(const Model& model);
 // generic lambdas (auto&& params) provided. Verbatim ports of run_layer1..4 /
 // run_full, rewritten to operate on ctx.* members instead of captured locals. ----
 
+// Runs the layer1 pair of basic residual blocks (10, 11; stride 1, no
+// downsample) on `in`, writing the final activation to ctx.l11_out.
 template <class ConvFn, class ResFn>
 void run_q2q_layer1(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, const QTensorNHWC& in) {
     conv_fn(in,          ctx.p10_c1, *ctx.c10_conv1, *ctx.bn10_1, true,  ACT_SCALE, ctx.l10_mid, ctx.H1, ctx.W1);
@@ -119,6 +121,9 @@ void run_q2q_layer1(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, c
     res_fn(ctx.l11_conv2_out, ctx.l10_out, ACT_SCALE, ctx.H1, ctx.W1, ctx.OC1, ctx.l11_out);
 }
 
+// Runs the layer2 pair of residual blocks (20: stride-2 with a downsample
+// projection; 21: stride 1) on `in`, writing the final activation to
+// ctx.l21_out.
 template <class ConvFn, class ResFn>
 void run_q2q_layer2(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, const QTensorNHWC& in) {
     conv_fn(in,          ctx.p20_c1, *ctx.c20_conv1, *ctx.bn20_1, true,  ACT_SCALE, ctx.l20_mid, ctx.H2, ctx.W2);
@@ -130,6 +135,9 @@ void run_q2q_layer2(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, c
     res_fn(ctx.l21_conv2_out, ctx.l20_out, ACT_SCALE, ctx.H2, ctx.W2, ctx.OC2, ctx.l21_out);
 }
 
+// Runs the layer3 pair of residual blocks (30: stride-2 with a downsample
+// projection; 31: stride 1) on `in`, writing the final activation to
+// ctx.l31_out.
 template <class ConvFn, class ResFn>
 void run_q2q_layer3(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, const QTensorNHWC& in) {
     conv_fn(in,          ctx.p30_c1, *ctx.c30_conv1, *ctx.bn30_1, true,  ACT_SCALE, ctx.l30_mid, ctx.H3, ctx.W3);
@@ -141,6 +149,9 @@ void run_q2q_layer3(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, c
     res_fn(ctx.l31_conv2_out, ctx.l30_out, ACT_SCALE, ctx.H3, ctx.W3, ctx.OC3, ctx.l31_out);
 }
 
+// Runs the layer4 pair of residual blocks (40: stride-2 with a downsample
+// projection; 41: stride 1) on `in`, writing the final activation to
+// ctx.l41_out.
 template <class ConvFn, class ResFn>
 void run_q2q_layer4(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, const QTensorNHWC& in) {
     conv_fn(in,          ctx.p40_c1, *ctx.c40_conv1, *ctx.bn40_1, true,  ACT_SCALE, ctx.l40_mid, ctx.H4, ctx.W4);
@@ -152,6 +163,10 @@ void run_q2q_layer4(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, c
     res_fn(ctx.l41_conv2_out, ctx.l40_out, ACT_SCALE, ctx.H4, ctx.W4, ctx.OC4, ctx.l41_out);
 }
 
+// End-to-end forward pass: quantizes `golden_input` to q8, runs conv1 +
+// maxpool + all four residual stacks (via run_q2q_layer1..4) with the given
+// kernel pair, then dequantizes the final activation and runs the
+// avgpool+FC head, leaving logits in ctx.fc_out.
 template <class ConvFn, class ResFn>
 void run_q2q_full(Q2QResnet18Context& ctx, ConvFn&& conv_fn, ResFn&& res_fn, const Tensor& golden_input) {
     quantize_nchw_fp32_to_q8_nhwc(golden_input.data.data(), ctx.H_IN, ctx.W_IN, ctx.IC_C1, ctx.input_q8);

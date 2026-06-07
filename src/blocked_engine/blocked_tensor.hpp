@@ -41,6 +41,8 @@ struct BlockedTensorFP32 {
     int C() const { return CB * 16; }
 };
 
+// Quantized counterpart of BlockedTensorFP32: same NCHWc16 int8 layout plus
+// a single per-tensor dequantization scale (real_value = data * scale).
 struct BlockedTensorI8 {
     int CB    = 0;
     int H     = 0;

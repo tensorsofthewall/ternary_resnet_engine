@@ -1,4 +1,4 @@
-// benchmark_q2q_layer23_stack.cpp — Q2Q/VNNI Phase 5: combined layer2+layer3
+// benchmark_q2q_layer23_stack.cpp — Q2Q/VNNI: combined layer2+layer3
 //
 // Chains the two independently-validated stacks end-to-end in QTensorNHWC,
 // with NO FP32 materialization at the layer2/layer3 boundary — layer2's q8

@@ -1,33 +1,32 @@
-// benchmark_q2q_microkernel_opt.cpp — Q2Q Phase 10, items 3-5: microkernel tuning
+// benchmark_q2q_microkernel_opt.cpp — microkernel tuning for the dense Q2Q convs
 //
-// Every prior Q2Q phase explicitly froze q2q_conv_bn_requant / vnni_oc4_dots /
-// q2q_residual_add_relu as "byte-identical, do not tune the microkernel" --
-// this phase explicitly REVERSES that constraint and asks to optimize them.
-// This benchmark builds the THREE proposed optimizations and times each one
-// PAIRED against its baseline (same data, same panel, back-to-back in one
-// loop) so the comparison is direct and noise-free:
+// q2q_conv_bn_requant / vnni_oc4_dots / q2q_residual_add_relu had been kept
+// byte-identical through earlier development; this benchmark explores tuning
+// them. It builds THREE proposed optimizations and times each one PAIRED
+// against its baseline (same data, same panel, back-to-back in one loop) so
+// the comparison is direct and noise-free:
 //
-//   (3) "A-panel interior fast path": vnni_oc4_n2_dots register-blocks TWO
+//   (1) "A-panel interior fast path": vnni_oc4_n2_dots register-blocks TWO
 //       adjacent output columns per weight-panel pass for stride=1 dense
 //       convs (the "interior" / non-downsample majority of layer1-4). Adjacent
 //       output columns share overlapping receptive fields offset by exactly
 //       C_IN bytes, so ONE set of w0..w3 loads serves BOTH -- halving weight-
 //       load traffic versus the per-pixel vnni_oc4_dots. 8 acc + 4 weight + 2
 //       activation = 14 YMM, fits AVX2's 16 with no spill.
-//   (4) q2q_residual_add_relu_avx2: the scalar per-channel
+//   (2) q2q_residual_add_relu_avx2: the scalar per-channel
 //       dequant->add->relu->requantize loop, vectorized 8-wide with
 //       _mm256_cvtepu8_epi32 / cvtepi32_ps / fmadd_ps / cvtps_epi32 / pack.
-//   (5) epilogue_oc4_simd: the BN-scale+bias+ReLU+requantize epilogue
+//   (3) epilogue_oc4_simd: the BN-scale+bias+ReLU+requantize epilogue
 //       (4 scalar std::lround+clamp+byte-stores per output pixel), replaced
 //       with one SSE float pipeline + one 4-byte store.
 //
-// q2q_conv_bn_requant_apanel = vnni_oc4_n2_dots (item 3, when applicable) +
-// epilogue_oc4_simd (item 5) -- both land in the same kernel since the
+// q2q_conv_bn_requant_apanel = vnni_oc4_n2_dots (1, when applicable) +
+// epilogue_oc4_simd (3) -- both land in the same kernel since the
 // epilogue runs once per accumulator group regardless of tiling.
 //
 // Representative shape: layer3.1.conv2 (256ch, 14x14, 3x3 stride=1) -- the
-// same dense-stride-1 family the "Beat ORT" packed-kernel plan used as its
-// Phase-1 baseline target, and large enough (K=256) to amortize pack/epilogue
+// same dense-stride-1 family the "Beat ORT" packed-kernel exploration used as
+// its baseline target, and large enough (K=256) to amortize pack/epilogue
 // overhead while small enough to iterate quickly.
 //
 // Do not touch basic_engine.
@@ -259,10 +258,10 @@ static void q2q_residual_add_relu(
 }
 
 // =====================================================================
-// OPTIMIZED kernels -- Phase 10, items 3 / 4 / 5
+// OPTIMIZED kernels (1 / 2 / 3 from the header comment above)
 // =====================================================================
 
-// (item 5) Vectorized BN-scale+bias + optional ReLU + requantize epilogue:
+// (3) Vectorized BN-scale+bias + optional ReLU + requantize epilogue:
 // 4 lanes (OC_TILE) at once via one SSE float pipeline + one 4-byte store,
 // replacing 4x scalar std::lround + clamp + per-byte store.
 static inline void epilogue_oc4_simd(
@@ -285,7 +284,7 @@ static inline void epilogue_oc4_simd(
     std::memcpy(out_px, &out32, sizeof(out32));
 }
 
-// (item 3) "A-panel interior fast path": register-blocks TWO adjacent output
+// (1) "A-panel interior fast path": register-blocks TWO adjacent output
 // columns (ow, ow+1) per weight-panel pass for stride=1 convs. They share
 // overlapping receptive fields offset by exactly C_IN bytes -- one w0..w3
 // load set serves both, halving weight-load traffic vs. vnni_oc4_dots.
@@ -330,9 +329,9 @@ static inline void vnni_oc4_n2_dots(
         for (int j = 0; j < OC_TILE; ++j) d[n][j] = hsum_epi32(acc[n][j]);
 }
 
-// q2q_conv_bn_requant_apanel = vnni_oc4_n2_dots (item 3, stride=1 + even OW)
+// q2q_conv_bn_requant_apanel = vnni_oc4_n2_dots (1, stride=1 + even OW)
 // or vnni_oc4_dots fallback (stride=2 / odd-OW tail) + epilogue_oc4_simd
-// (item 5, always). This is the proposed drop-in replacement for
+// (3, always). This is the proposed drop-in replacement for
 // q2q_conv_bn_requant across the Q2Q trunk.
 static void q2q_conv_bn_requant_apanel(
     const QTensorNHWC& x, const std::vector<int8_t>& panel,
@@ -388,7 +387,7 @@ static void q2q_conv_bn_requant_apanel(
     }
 }
 
-// (item 4) AVX2 8-wide vectorized residual add + ReLU + requantize. C is
+// (2) AVX2 8-wide vectorized residual add + ReLU + requantize. C is
 // always a multiple of 32 for every q8 tensor in this engine -- no tail.
 static void q2q_residual_add_relu_avx2(
     const QTensorNHWC& a, const QTensorNHWC& b,
@@ -463,7 +462,7 @@ int main(int argc, char* argv[]) {
 
         // Representative dense stride=1 3x3 conv -- layer3.1.conv2
         // (256ch, 14x14): the same family/shape the "Beat ORT" packed-kernel
-        // plan benchmarked as its Phase 1 baseline (~2.5ms in basic_engine).
+        // exploration benchmarked as its baseline target (~2.5ms in basic_engine).
         const Conv2DParams& conv  = model.convs.at("layer3.1.conv2");
         const BNFusedParams& bn   = model.fused_bns.at("layer3.1.bn2");
         const int C = conv.in_channels;   // 256 (== out_channels, identity block)
@@ -472,7 +471,7 @@ int main(int argc, char* argv[]) {
         if (C % K_CHUNK != 0 || conv.out_channels % OC_TILE != 0 || conv.stride_h != 1)
             throw std::runtime_error("expected layer3.1.conv2 to be dense IC=OC, stride=1, 3x3");
 
-        std::cout << "=== benchmark_q2q_microkernel_opt: Phase 10 items 3-5 (paired A/B, same data) ===\n";
+        std::cout << "=== benchmark_q2q_microkernel_opt: dense-conv/residual microkernel tuning (paired A/B, same data) ===\n";
         std::cout << "  representative conv: layer3.1.conv2  IC=" << C << " OC=" << conv.out_channels
                   << "  " << H << "x" << W << "  (3x3 stride=1 -- 'interior' dense family)\n";
         std::cout << "  ACT_SCALE: " << ACT_SCALE << "\n";
@@ -487,7 +486,7 @@ int main(int argc, char* argv[]) {
         constexpr int N_WARMUP = 20;
         constexpr int N_TIMED  = 200;
 
-        // ---- (3)+(5) paired: q2q_conv_bn_requant vs q2q_conv_bn_requant_apanel ----
+        // ---- (1)+(3) paired: q2q_conv_bn_requant vs q2q_conv_bn_requant_apanel ----
         for (int i = 0; i < N_WARMUP; ++i) {
             q2q_conv_bn_requant(input, panel, conv, bn, true, ACT_SCALE, out_orig, H, W);
             q2q_conv_bn_requant_apanel(input, panel, conv, bn, true, ACT_SCALE, out_apanel, H, W);
@@ -506,10 +505,10 @@ int main(int argc, char* argv[]) {
         for (size_t i = 0; i < out_orig.data.size(); ++i)
             if (out_orig.data[i] != out_apanel.data[i]) ++mismatches_conv;
 
-        std::cout << "\n--- items 3+5: conv kernel (orig vs A-panel N_TILE=2 + SIMD epilogue), "
+        std::cout << "\n--- conv kernel (orig vs A-panel N_TILE=2 + SIMD epilogue), "
                   << N_TIMED << " paired runs ---\n";
         print_stats("q2q_conv_bn_requant         (baseline)        ", t_orig_conv, N_TIMED);
-        print_stats("q2q_conv_bn_requant_apanel  (items 3+5)       ", t_apanel_conv, N_TIMED);
+        print_stats("q2q_conv_bn_requant_apanel  (tuned)           ", t_apanel_conv, N_TIMED);
         {
             std::vector<double> so = t_orig_conv, sa = t_apanel_conv;
             std::sort(so.begin(), so.end()); std::sort(sa.begin(), sa.end());
@@ -524,7 +523,7 @@ int main(int argc, char* argv[]) {
                           << " ms) -- " << (ma / mo) << "x slower; keep baseline.\n";
         }
 
-        // ---- (4) paired: q2q_residual_add_relu vs q2q_residual_add_relu_avx2 ----
+        // ---- (2) paired: q2q_residual_add_relu vs q2q_residual_add_relu_avx2 ----
         QTensorNHWC ra = make_q8_tensor(H, W, C, ACT_SCALE);
         QTensorNHWC rb = make_q8_tensor(H, W, C, ACT_SCALE);
         fill_random_q8(ra, 0x9E3779B9u);
@@ -550,10 +549,10 @@ int main(int argc, char* argv[]) {
         for (size_t i = 0; i < res_orig.data.size(); ++i)
             if (res_orig.data[i] != res_avx2.data[i]) ++mismatches_res;
 
-        std::cout << "\n--- item 4: residual add+ReLU (scalar vs AVX2 8-wide), "
+        std::cout << "\n--- residual add+ReLU (scalar vs AVX2 8-wide), "
                   << N_TIMED << " paired runs ---\n";
         print_stats("q2q_residual_add_relu       (baseline)        ", t_orig_res, N_TIMED);
-        print_stats("q2q_residual_add_relu_avx2  (item 4)          ", t_avx2_res, N_TIMED);
+        print_stats("q2q_residual_add_relu_avx2  (tuned)           ", t_avx2_res, N_TIMED);
         {
             std::vector<double> so = t_orig_res, sa = t_avx2_res;
             std::sort(so.begin(), so.end()); std::sort(sa.begin(), sa.end());

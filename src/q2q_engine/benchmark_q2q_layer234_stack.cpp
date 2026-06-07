@@ -1,4 +1,4 @@
-// benchmark_q2q_layer234_stack.cpp — Q2Q/VNNI Phase 7: combined layer2+3+4
+// benchmark_q2q_layer234_stack.cpp — Q2Q/VNNI: combined layer2+3+4
 //
 // Chains all three independently-validated residual stacks end-to-end in
 // QTensorNHWC, with NO FP32 materialization at any stack boundary — each

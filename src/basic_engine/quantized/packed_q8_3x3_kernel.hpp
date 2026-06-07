@@ -89,13 +89,13 @@ void packed_q8_3x3_s1_layer2_bn_relu_avx2(
     Tensor&                   y_out);
 
 // ---------------------------------------------------------------------------
-// OC_TILE=2 (Phase 3): merged pair plan — one A_panel load per k serves both OCs.
+// OC_TILE=2: merged pair plan — one A_panel load per k serves both OCs.
 //
 // PairAction: for each k where at least one of w0/w1 is nonzero, stores both
 // weights. Inner loop uses sign_epi32 for branch-free weighting (w in {-1,0,+1}).
 // Four independent int32 accumulator chains for better OOO pipeline utilisation.
 //
-// Layer3 only (layer4 ruled out in Phase 2: panel 72KB exceeds L1).
+// Layer3 only (layer4 ruled out: panel 72KB exceeds L1).
 // ---------------------------------------------------------------------------
 
 struct PairAction {
@@ -129,7 +129,7 @@ void packed_q8_3x3_s1_layer3_oc2_bn_relu_avx2(
     Tensor&                     y_out);
 
 // ---------------------------------------------------------------------------
-// OC_TILE=4 (Phase 3): merged quad plan — one A_panel load per k serves 4 OCs.
+// OC_TILE=4: merged quad plan — one A_panel load per k serves 4 OCs.
 //
 // Eight independent int32 accumulator chains.  AVX2 has 16 YMM registers;
 // the quad kernel uses at most 13 simultaneously (8 accumulators + raw/lo/hi +

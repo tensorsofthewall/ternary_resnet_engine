@@ -1,26 +1,25 @@
-// benchmark_q2q_full_prefix_optimized.cpp — Q2Q Phase 10, item 6: re-run with
-// items 3-5 wired in
+// benchmark_q2q_full_prefix_optimized.cpp — the final Q2Q/VNNI engine benchmark.
 //
-// Same all-Q2Q forward prefix as benchmark_q2q_full_prefix.cpp (Phase 10b):
+// Runs the full all-Q2Q forward prefix:
 //   FP32 input -> quantize -> conv1(Q2Q) -> maxpool(q8) -> layer1-4(Q2Q)
 //   -> dequant -> basic_engine avgpool+fc
-// but with the THREE microkernel optimizations from Phase 10 items 3-5
-// (validated standalone in benchmark_q2q_microkernel_opt.cpp, ~2.08x and
-// ~17x paired wins respectively) wired into every layer1-4 conv/residual call:
+// using the tuned dense-conv and residual microkernels (validated standalone
+// in benchmark_q2q_microkernel_opt.cpp, ~2.08x and ~17x paired wins over the
+// straightforward versions) wired into every layer1-4 conv/residual call:
 //
-//   q2q_conv_bn_requant        -> q2q_conv_bn_requant_apanel   (items 3+5)
-//   q2q_residual_add_relu      -> q2q_residual_add_relu_avx2   (item 4)
+//   q2q_conv_bn_requant        -> q2q_conv_bn_requant_apanel
+//   q2q_residual_add_relu      -> q2q_residual_add_relu_avx2
 //
-// conv1 (im2col VNNI) and maxpool (q8-direct) are UNCHANGED -- items 3-5 only
-// target the dense layer1-4 family (the validated ~1.85-1.88x trunk), so this
-// is where the wins land.
+// conv1 (im2col VNNI) and maxpool (q8-direct) use their own validated kernels
+// and are shared by both phases below -- the tuned dense-conv/residual
+// microkernels only target the dense layer1-4 family (the ~1.85-1.88x trunk),
+// so that's where the wins land.
 //
-// To keep the comparison live and fair, BOTH pipelines run in this one binary
-// back-to-back (original-kernel "baseline_total" replicating Phase 10b, then
-// optimized-kernel "optimized_total"), sharing one scratch-tensor set across
-// the two self-contained warmup+timed phases -- the same pattern
-// benchmark_q2q_layer1_stack used for its "q2q_only" vs "with_convert" phases.
-// Both are gated against a freshly, live-measured basic_engine full-model cost.
+// To keep the comparison live and fair, BOTH the straightforward and the tuned
+// kernel pairings run in this one binary back-to-back ("baseline_total" then
+// "optimized_total"), sharing one scratch-tensor set across the two
+// self-contained warmup+timed phases. Both are gated against a freshly,
+// live-measured basic_engine full-model cost.
 //
 // run_q2q_layerN / run_q2q_full are templates parameterized over (conv_fn,
 // res_fn) (q2q_resnet18.hpp) -- the compiler generates a distinct
@@ -97,19 +96,18 @@ int main(int argc, char* argv[]) {
 
         auto ctx = build_q2q_resnet18_context(model);
 
-        std::cout << "=== benchmark_q2q_full_prefix_optimized: Phase 10 item 6 -- re-run with "
-                     "items 3-5 wired in ===\n";
+        std::cout << "=== benchmark_q2q_full_prefix_optimized: tuned full-prefix forward pass ===\n";
         std::cout << "  pipeline: FP32 -> quantize -> conv1(Q2Q) -> maxpool(q8) -> layer1-4(Q2Q) "
                      "-> dequant -> avgpool+fc\n";
-        std::cout << "  baseline kernels  : q2q_conv_bn_requant      + q2q_residual_add_relu      (Phase 10b)\n";
+        std::cout << "  baseline kernels  : q2q_conv_bn_requant        + q2q_residual_add_relu\n";
         std::cout << "  optimized kernels : q2q_conv_bn_requant_apanel + q2q_residual_add_relu_avx2 "
-                     "(items 3+4+5, ~2.08x / ~17x paired wins standalone)\n";
-        std::cout << "  conv1 uses the fast-gather + SIMD-epilogue kernel in Phase B "
+                     "(~2.08x / ~17x paired wins standalone)\n";
+        std::cout << "  conv1 uses the fast-gather + SIMD-epilogue kernel in both phases "
                      "(~4.6x standalone win, validated in benchmark_q2q_conv1_opt); "
                      "maxpool stays q8-direct/unchanged\n";
         std::cout << "  ACT_SCALE: " << ACT_SCALE << "\n";
-        std::cout << "  Phase 12: optimized-path kernels (conv1, layer1-4 conv/residual, maxpool) "
-                     "now run multi-threaded via OpenMP -- requested threads: " << threads
+        std::cout << "  optimized-path kernels (conv1, layer1-4 conv/residual, maxpool) "
+                     "run multi-threaded via OpenMP -- requested threads: " << threads
                   << " (omp_get_max_threads() = " << omp_get_max_threads() << ")\n";
 
         // ---- live basic_engine full-model baseline ----
@@ -140,10 +138,10 @@ int main(int argc, char* argv[]) {
         constexpr int N_WARMUP = 20;
         constexpr int N_TIMED  = 100;
 
-        // ---- Phase A: baseline dense-conv/residual kernels + optimized conv1.
-        // (conv1 is now the fast-gather+SIMD kernel in BOTH phases -- it's a
-        // strict win, so there is no reason to keep a slower copy around just
-        // to replicate Phase 10b's exact number; this isolates items 3+4+5's
+        // ---- Phase A: straightforward dense-conv/residual kernels + tuned conv1.
+        // (conv1 is the fast-gather+SIMD kernel in BOTH phases -- it's a
+        // strict win, so there is no reason to keep a slower copy around;
+        // this isolates the dense conv/residual microkernel tuning's
         // contribution on a like-for-like conv1.) ----
         for (int i = 0; i < N_WARMUP; ++i) run_q2q_full(ctx, q2q_conv_bn_requant, q2q_residual_add_relu, golden_input);
         std::vector<double> t_baseline(N_TIMED);
@@ -155,7 +153,7 @@ int main(int argc, char* argv[]) {
         volatile float sink_a = ctx.fc_out.data[0];
         (void)sink_a;
 
-        // ---- Phase B: optimized kernels (items 3+4+5), with per-stage breakdown ----
+        // ---- Phase B: tuned kernels, with per-stage breakdown ----
         for (int i = 0; i < N_WARMUP; ++i) run_q2q_full(ctx, q2q_conv_bn_requant_apanel, q2q_residual_add_relu_avx2, golden_input);
         std::vector<double> t_quant(N_TIMED), t_conv1(N_TIMED), t_maxpool(N_TIMED),
                             t_layer1(N_TIMED), t_layer2(N_TIMED), t_layer3(N_TIMED), t_layer4(N_TIMED),
@@ -189,10 +187,10 @@ int main(int argc, char* argv[]) {
         volatile float sink_b = ctx.fc_out.data[0] + ctx.dequant_out.data[0];
         (void)sink_b;
 
-        std::cout << "\n=== Phase A: baseline dense-conv/residual + optimized conv1 (" << N_TIMED << " runs) ===\n";
+        std::cout << "\n=== Phase A: straightforward dense-conv/residual + tuned conv1 (" << N_TIMED << " runs) ===\n";
         print_stats("baseline_total_ms (q2q_conv_bn_requant + q2q_residual_add_relu)", t_baseline, N_TIMED);
 
-        std::cout << "\n=== Phase B: optimized-kernel full prefix (" << N_TIMED << " runs, items 3+4+5 wired in) ===\n";
+        std::cout << "\n=== Phase B: tuned-kernel full prefix (" << N_TIMED << " runs) ===\n";
         print_stats("quantize_ms     (unchanged)                     ", t_quant, N_TIMED);
         print_stats("conv1_ms        (fast-gather + simd epilogue)   ", t_conv1, N_TIMED);
         print_stats("maxpool_ms      (unchanged, q8-direct)          ", t_maxpool, N_TIMED);
@@ -211,20 +209,20 @@ int main(int argc, char* argv[]) {
         const double med_optimized = so[N_TIMED / 2];
 
         std::cout << "\n=== gate: optimized full prefix vs baseline full prefix vs basic_engine ===\n";
-        std::cout << "  basic_engine full model (measured live, med) : " << basic_full_ms << " ms\n";
-        std::cout << "  baseline full prefix    (med, Phase 10b kernels): " << med_baseline << " ms\n";
-        std::cout << "  optimized full prefix   (med, items 3+4+5)      : " << med_optimized << " ms\n";
-        std::cout << "  items 3+4+5 speedup over Phase 10b prefix       : "
+        std::cout << "  basic_engine full model (measured live, med)    : " << basic_full_ms << " ms\n";
+        std::cout << "  baseline full prefix    (med, straightforward)  : " << med_baseline << " ms\n";
+        std::cout << "  optimized full prefix   (med, tuned kernels)    : " << med_optimized << " ms\n";
+        std::cout << "  tuned-kernel speedup over straightforward prefix: "
                   << (med_baseline / med_optimized) << "x\n";
         std::cout << "  optimized prefix speedup over basic_engine      : "
                   << (basic_full_ms / med_optimized) << "x\n";
 
         if (med_optimized < med_baseline) {
-            std::cout << "  RESULT: items 3+4+5 IMPROVE the full prefix -- " << med_optimized
+            std::cout << "  RESULT: the tuned kernels IMPROVE the full prefix -- " << med_optimized
                       << " ms vs " << med_baseline << " ms (" << (med_baseline / med_optimized)
-                      << "x). The microkernel-tuning reversal paid off end-to-end, not just standalone.\n";
+                      << "x). The microkernel tuning paid off end-to-end, not just standalone.\n";
         } else {
-            std::cout << "  RESULT: items 3+4+5 do NOT improve the full prefix end-to-end ("
+            std::cout << "  RESULT: the tuned kernels do NOT improve the full prefix end-to-end ("
                       << med_optimized << " ms vs " << med_baseline << " ms) despite standalone wins "
                          "-- some interaction (cache pressure, dispatch overhead, generic-lambda "
                          "codegen) erases the microkernel-level gains at full-pipeline scale.\n";

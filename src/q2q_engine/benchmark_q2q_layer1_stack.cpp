@@ -1,4 +1,4 @@
-// benchmark_q2q_layer1_stack.cpp — Q2Q/VNNI Phase 8: full layer1 stack (q8-to-q8)
+// benchmark_q2q_layer1_stack.cpp — Q2Q/VNNI: full layer1 stack (q8-to-q8)
 //
 // Extends the validated layer2/3/4 trunk (32.37ms -> ~17.3ms, ~1.85-1.88x) to
 // layer1 — the largest remaining ResNet stage outside that trunk. Layer1 is

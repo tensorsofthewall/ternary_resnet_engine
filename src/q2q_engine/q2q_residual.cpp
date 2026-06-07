@@ -48,7 +48,7 @@ void q2q_residual_add_relu_avx2(
     const uint8_t* bbase = b.data.data();
     uint8_t* ybase = y.data.data();
 
-    // Phase 12: parallelize over the flattened (h, w) element-tile space --
+    // Parallelize over the flattened (h, w) element-tile space --
     // collapsing both spatial dims (rather than just rows) keeps every thread
     // fed even for layer4's small H*W=49; each (h,w) tile writes a disjoint
     // C-channel run of the output, so there are no races.

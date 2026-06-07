@@ -81,6 +81,8 @@ bool can_use_q8_ocblock4_layer1_s1_3x3_avx2(const Conv2DParams& conv) {
 
 namespace {
 
+// Reads one quantized int8 activation and widens it to int32 for scalar
+// accumulation.
 inline int32_t q8_at(
     const QuantTensorI8& xq,
     int c,
@@ -90,6 +92,9 @@ inline int32_t q8_at(
     return static_cast<int32_t>(xq(c, h, w));
 }
 
+// Builds an AVX2 lane mask with the low `valid_lanes` int32 lanes set to -1
+// (all bits) and the rest 0, for masked tail stores when an output row's
+// width isn't a multiple of 8.
 inline __m256i make_tail_mask_i32(int valid_lanes) {
     alignas(32) int mask_values[8];
 
@@ -102,6 +107,9 @@ inline __m256i make_tail_mask_i32(int valid_lanes) {
     );
 }
 
+// Stores up to 8 floats to `base`, writing only the low `valid_lanes` lanes
+// -- the masked counterpart to a plain _mm256_storeu_ps for output-row tails
+// narrower than 8 pixels.
 inline void store_width_masked_8(
     float* base,
     __m256 value,
@@ -111,6 +119,9 @@ inline void store_width_masked_8(
     _mm256_maskstore_ps(base, mask, value);
 }
 
+// Loads exactly 7 int8 activations (the layer4 single-tile OW=7 case) into
+// an 8-lane int32 vector, zero-filling lane 7 via a stack scratch buffer
+// (avoids reading the 8th, possibly out-of-bounds, byte directly).
 inline __m256i load_i8_width7_to_i32_safe(const int8_t* base) {
     alignas(16) int8_t tmp[8];
 
@@ -129,6 +140,9 @@ inline __m256i load_i8_width7_to_i32_safe(const int8_t* base) {
     return _mm256_cvtepi8_epi32(bytes);
 }
 
+// Vector stride-1 load: reads 8 consecutive int8 activations and widens them
+// to an 8-lane int32 vector with one load + one sign-extend (no shuffling --
+// the fast path for stride-1 convs where activations are already contiguous).
 inline __m256i load_i8_width8_s1_to_i32_fast(const int8_t* base) {
     const __m128i bytes = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(base));
     return _mm256_cvtepi8_epi32(bytes);
@@ -316,6 +330,9 @@ inline void q8_ocblock4_oh1_dispatch(
     }
 }
 
+// Scalar ternary accumulation: acc += x if w==+1, acc -= x if w==-1, no-op if
+// w==0 -- the branch-on-value fallback used where bucket dispatch isn't worth
+// the setup (e.g. masked tail lanes).
 inline void apply_weight_i32(
     int32_t& acc,
     int32_t x,
@@ -328,6 +345,21 @@ inline void apply_weight_i32(
     }
 }
 
+// ---------------------------------------------------------------------
+// _impl kernels: each parallelizes over plan.oc_blocks (OpenMP, one
+// PatternOCBlock4Plan -- 4 output channels -- per task), and for every
+// output-row tile dispatches each bucket's actions through
+// q8_ocblock4_oh{1,2}_dispatch (branch-free add/sub on the int32
+// activation-sum accumulators per the bucket's compile-time-constant ternary
+// pattern), then applies the fused per-channel BN scale/bias, optional ReLU
+// clamp, and a masked vector store for any output-row tail narrower than 8
+// pixels. They differ only in their fixed input/output extents and
+// row/column tiling (each documented inline below); throwing if called on a
+// conv that doesn't match their can_use_* predicate's shape.
+// ---------------------------------------------------------------------
+
+// Targets layer4's 7x7 stride-1 output (OH_BLOCK=2 with a 1-row remainder;
+// single OW=7 tile, masked to valid_lanes=7).
 void conv3x3_q8_ocblock4_layer4_s1_bn_avx2_impl(
     const QuantTensorI8& xq,
     const Conv2DParams& conv,
@@ -443,6 +475,10 @@ void conv3x3_q8_ocblock4_layer4_s1_bn_avx2_impl(
 
 }
 
+// Shared stride-2 downsample kernel for both supported shapes (caller passes
+// the actual `out_h`/`out_w`): OH_BLOCK=2 row pairs, output columns split
+// into an 8-wide main tile plus a narrower tail tile, with stride-2
+// activation gather via load_i8_stride2_x8_to_i32 (SSSE3 byte shuffle).
 void conv3x3_q8_ocblock4_s2_bn_avx2_out_hw_impl(
     const QuantTensorI8& xq,
     int out_h,
@@ -617,6 +653,8 @@ void conv3x3_q8_ocblock4_s2_bn_avx2_out_hw_impl(
 
 }
 
+// Targets layer2's 28x28 stride-1 output: OH_BLOCK=2, OW=28 split into four
+// 8-wide tiles with the last one's tail masked to valid_lanes=4.
 void conv3x3_q8_ocblock4_layer2_s1_bn_avx2_impl(
     const QuantTensorI8& xq,
     const Conv2DParams& conv,
@@ -700,6 +738,8 @@ void conv3x3_q8_ocblock4_layer2_s1_bn_avx2_impl(
     }
 }
 
+// Targets layer3's 14x14 stride-1 output: OH_BLOCK=2, OW=14 split into an
+// 8-wide main tile and a 6-lane tail tile.
 void conv3x3_q8_ocblock4_layer3_s1_bn_avx2_impl(
     const QuantTensorI8& xq,
     const Conv2DParams& conv,
@@ -782,6 +822,9 @@ void conv3x3_q8_ocblock4_layer3_s1_bn_avx2_impl(
     }
 }
 
+// Targets layer1's 56x56 stride-1 output: OH_BLOCK=2 (28 row-pairs), OW=56
+// as 7 full 8-wide tiles with no tail (the input's pad layout guarantees the
+// last tile's 8-byte load stays in-bounds without extra padding).
 void conv3x3_q8_ocblock4_layer1_s1_bn_avx2_impl(
     const QuantTensorI8& xq,
     const Conv2DParams& conv,
