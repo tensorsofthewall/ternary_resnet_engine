@@ -624,3 +624,39 @@ target_compile_definitions(benchmark_q2q_full_prefix PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_full_prefix PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_full_prefix PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# benchmark_q2q_full_prefix_optimized -- Phase 10 item 6: re-run the full Q2Q
+# prefix with items 3-5's validated microkernel optimizations wired in
+# (q2q_conv_bn_requant_apanel + q2q_residual_add_relu_avx2 replacing the
+# baseline dense-conv/residual kernels for layer1-4; conv1/maxpool unchanged).
+# Measures baseline-kernel and optimized-kernel pipelines back-to-back in one
+# binary, plus the live basic_engine full-model gate. Needs the full
+# resnet18_engine.cpp dependency chain for that baseline.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_full_prefix_optimized
+    src/q2q_engine/benchmark_q2q_full_prefix_optimized.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/resnet18_engine.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_avx2.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock2_avx2.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock4_avx2.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_avx2.cpp
+    src/basic_engine/quantized/quant_utils.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock4_avx2.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock2_avx2.cpp
+    src/basic_engine/quantized/conv1x1_q8_s2_avx2.cpp
+)
+target_include_directories(benchmark_q2q_full_prefix_optimized PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_full_prefix_optimized PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_full_prefix_optimized PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_full_prefix_optimized PRIVATE OpenMP::OpenMP_CXX)
