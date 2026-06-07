@@ -353,3 +353,29 @@ target_compile_definitions(benchmark_q2q_layer2_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_layer2_stack PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_layer2_stack PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 4: full layer3 stack (layer3.0 + layer3.1), q8-to-q8 end-to-end.
+# Structurally identical to the layer2 stack (conv1 s2, conv2 s1, 1x1 s2
+# downsample, q8 residual add+ReLU) but with K doubled (128->256, 256->256) —
+# tests whether VNNI's per-MAC throughput edge grows with K. Reuses the same
+# fused conv kernel / vnni_oc4_dots / residual-add byte-for-byte; only model
+# tensor names, channel counts, and spatial dims differ. Gate: q2q_only must
+# beat the measured basic_engine layer3 stack (~12.50 ms, q8 OCBlock2 bucket,
+# 1T) to proceed toward full ResNet.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_layer3_stack
+    src/q2q_engine/benchmark_q2q_layer3_stack.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_layer3_stack PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_layer3_stack PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_layer3_stack PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_layer3_stack PRIVATE OpenMP::OpenMP_CXX)
