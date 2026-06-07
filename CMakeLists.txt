@@ -305,3 +305,26 @@ target_compile_definitions(benchmark_q2q_vnni PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_vnni PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_vnni PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 2: layer2.1 q8-to-q8 residual block (runtime-only, no correctness
+# check). Chains the validated VNNI dense kernel through conv1 -> conv2 ->
+# residual entirely in QTensorNHWC (uint8 NHWC) — no FP32 activation tensor
+# crosses any op boundary. Gate: q2q_only must beat the measured basic_engine
+# layer2.1 block (~5.42 ms, q8 OCBlock2 bucket, 1T) to continue.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_block
+    src/q2q_engine/benchmark_q2q_block.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_block PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_block PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_block PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_block PRIVATE OpenMP::OpenMP_CXX)
