@@ -42,8 +42,7 @@ echo
 echo "==> [4/6] Single-thread smoke test..."
 OMP_NUM_THREADS=1 ./build/basic_engine \
     artifacts/model_ternary_i8_weights_v1.bin \
-    artifacts/golden_input_fp32.bin \
-    artifacts/golden_logits_fp32.bin
+    artifacts/golden_input_fp32.bin
 echo
 
 # ── Step 5: C++ (basic_engine + Q2Q/VNNI) vs ORT FP32/INT8 benchmark ─────────

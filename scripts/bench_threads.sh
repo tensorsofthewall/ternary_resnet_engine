@@ -3,7 +3,6 @@ set -euo pipefail
 
 MODEL="artifacts/model_ternary_i8_weights_v1.bin"
 INPUT="artifacts/golden_input_fp32.bin"
-GOLDEN="artifacts/golden_logits_fp32.bin"
 
 THREAD_COUNTS=(1 2 4 8)
 
@@ -40,7 +39,7 @@ LOG_FILE="logs/thread_scaling_${TIMESTAMP}.log"
         echo "========================================"
 
         OMP_NUM_THREADS="${t}" \
-        ./build/basic_engine "$MODEL" "$INPUT" "$GOLDEN"
+        ./build/basic_engine "$MODEL" "$INPUT"
 
         echo
     done

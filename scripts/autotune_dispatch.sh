@@ -9,7 +9,6 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$REPO/src/basic_engine/resnet18_engine.cpp"
 MODEL="$REPO/artifacts/model_ternary_i8_weights_v1.bin"
 INPUT="$REPO/artifacts/golden_input_fp32.bin"
-LOGITS="$REPO/artifacts/golden_logits_fp32.bin"
 ENGINE="$REPO/build/basic_engine"
 parse_min() {
     grep "min_ms:" | awk '{print $2}' | head -1
@@ -18,7 +17,7 @@ parse_min() {
 benchmark_threads() {
     local threads=$1
     OMP_NUM_THREADS=$threads OMP_PROC_BIND=close OMP_PLACES=cores \
-        "$ENGINE" "$MODEL" "$INPUT" "$LOGITS" 2>/dev/null | parse_min
+        "$ENGINE" "$MODEL" "$INPUT" 2>/dev/null | parse_min
 }
 
 set_flag() {

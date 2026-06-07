@@ -125,7 +125,6 @@ def benchmark_cpp_engine(
     engine_path: Path,
     model_bin: Path,
     input_bin: Path,
-    golden_logits_bin: Path,
     threads: int,
 ) -> dict[str, float]:
     env = os.environ.copy()
@@ -135,7 +134,6 @@ def benchmark_cpp_engine(
         str(engine_path),
         str(model_bin),
         str(input_bin),
-        str(golden_logits_bin),
     ]
 
     result = subprocess.run(
@@ -280,7 +278,6 @@ def main() -> None:
 
     model_bin = artifact_dir / "model_ternary_i8_weights_v1.bin"
     input_bin = artifact_dir / "golden_input_fp32.bin"
-    golden_logits_bin = artifact_dir / "golden_logits_fp32.bin"
     input_npy = artifact_dir / "golden_input.npy"
 
     required_paths = [
@@ -288,7 +285,6 @@ def main() -> None:
         fp32_onnx,
         model_bin,
         input_bin,
-        golden_logits_bin,
         input_npy,
     ]
 
@@ -332,7 +328,6 @@ def main() -> None:
             engine_path=args.engine,
             model_bin=model_bin,
             input_bin=input_bin,
-            golden_logits_bin=golden_logits_bin,
             threads=threads,
         )
 

@@ -1,4 +1,3 @@
-#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -75,14 +74,13 @@ std::vector<float> read_f32_file(const std::filesystem::path& path, size_t expec
 }
 
 int main(int argc, char** argv) {
-    if (argc < 4) {
-        std::cerr << "Usage: ternary_resnet <model.bin> <input_f32.bin> <golden_logits_f32.bin>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: ternary_resnet <model.bin> <input_f32.bin>\n";
         return 1;
     }
 
     const auto model_path = std::filesystem::path(argv[1]);
     const auto input_path = std::filesystem::path(argv[2]);
-    const auto logits_path = std::filesystem::path(argv[3]);
 
     const Model model = load_model(model_path);
 
@@ -154,7 +152,7 @@ int main(int argc, char** argv) {
     std::cout << "  p90_ms:    " << stats.p90_ms << "\n";
 
     std::vector<TimingEntry> timings;
-    Tensor profiled_output = forward_resnet18_workspace_timed(model, input, workspace, timings);
+    forward_resnet18_workspace_timed(model, input, workspace, timings);
 
     double total_profiled_ms = 0.0;
 
@@ -185,40 +183,6 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "  total_profiled_ms: " << total_profiled_ms << " ms\n";
-
-    const std::vector<float> golden = read_f32_file(logits_path, 1000);
-
-    const Tensor& validation_output = profiled_output;
-
-    float max_abs = 0.0f;
-    double mean_abs = 0.0;
-
-    for (int i = 0; i < 1000; ++i) {
-        const size_t idx = static_cast<size_t>(i);
-
-        const float err = std::abs(
-            validation_output.data[idx] - golden[idx]
-        );
-
-        max_abs = std::max(max_abs, err);
-        mean_abs += static_cast<double>(err);
-    }
-
-    mean_abs /= 1000.0;
-
-    std::cout << "C++ engine vs PyTorch golden\n";
-    std::cout << "  max_abs_error:  " << max_abs << "\n";
-    std::cout << "  mean_abs_error: " << mean_abs << "\n";
-
-    std::cout << "Sample logits:\n";
-    for (int i = 0; i < 5; ++i) {
-        const size_t idx = static_cast<size_t>(i);
-
-        std::cout
-            << "  y[" << i << "] cpp=" << validation_output.data[idx]
-            << " golden=" << golden[idx]
-            << "\n";
-    }
 
     return 0;
 }

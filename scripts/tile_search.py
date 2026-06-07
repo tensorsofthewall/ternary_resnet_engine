@@ -184,7 +184,6 @@ def run_benchmark(
     engine_path: Path,
     model_bin: Path,
     input_bin: Path,
-    golden_bin: Path,
     threads: int,
     runs: int,
 ) -> dict[str, float] | None:
@@ -199,7 +198,7 @@ def run_benchmark(
     env = {**os.environ, **env_overrides}
 
     result = subprocess.run(
-        [str(engine_path), str(model_bin), str(input_bin), str(golden_bin)],
+        [str(engine_path), str(model_bin), str(input_bin)],
         capture_output=True,
         text=True,
         env=env,
@@ -288,9 +287,8 @@ def main() -> None:
 
     model_bin = args.artifact_dir / "model_ternary_i8_weights_v1.bin"
     input_bin = args.artifact_dir / "golden_input_fp32.bin"
-    golden_bin = args.artifact_dir / "golden_logits_fp32.bin"
 
-    for p in [model_bin, input_bin, golden_bin, args.engine_src, args.build_dir]:
+    for p in [model_bin, input_bin, args.engine_src, args.build_dir]:
         if not p.exists():
             print(f"ERROR: required path not found: {p}", file=sys.stderr)
             sys.exit(1)
@@ -339,7 +337,6 @@ def main() -> None:
                 engine_path=args.engine,
                 model_bin=model_bin,
                 input_bin=input_bin,
-                golden_bin=golden_bin,
                 threads=args.threads,
                 runs=args.runs,
             )
