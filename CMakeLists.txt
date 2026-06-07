@@ -6,6 +6,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+find_package(OpenMP REQUIRED)
+
+# Build group switches -- keep the default build (basic_engine + the winning
+# Q2Q benchmark and its standalone validations) small and reproducible;
+# historical/intermediate benchmarks from the optimization process are opt-in.
+option(BUILD_EXPERIMENTS "Build historical basic_engine-family benchmark binaries (benchmark_layer4_q8/packed_3x3/gemm3x3/nchwc, blocked_engine, benchmark_cbhwb/w16w32)" OFF)
+option(BUILD_Q2Q_EXPERIMENTS "Build intermediate/historical Q2Q benchmark binaries (layer stacks, hybrid trunk, conv1+maxpool, original full prefix, etc.)" OFF)
+option(BUILD_Q2Q_FINAL "Build the winning Q2Q benchmark binaries (full prefix + the standalone microkernel/conv1 validations behind it)" ON)
+
 add_executable(basic_engine
     src/basic_engine/main.cpp
     src/basic_engine/model_loader.cpp
@@ -49,6 +58,14 @@ target_compile_options(basic_engine PRIVATE
     -mfma
 )
 
+target_link_libraries(basic_engine PRIVATE OpenMP::OpenMP_CXX)
+
+
+# ---------------------------------------------------------------------------
+# Reference benchmarks: basic_engine-family milestone/comparison binaries from
+# the optimization process (not part of the submission's default build).
+# ---------------------------------------------------------------------------
+if(BUILD_EXPERIMENTS)
 
 add_executable(benchmark_layer4_q8
     src/basic_engine/benchmark_layer4_q8.cpp
@@ -159,8 +176,6 @@ target_compile_options(benchmark_gemm3x3 PRIVATE
     -mfma
 )
 
-find_package(OpenMP REQUIRED)
-
 add_executable(benchmark_nchwc
     src/basic_engine/benchmark_nchwc.cpp
     src/basic_engine/model_loader.cpp
@@ -196,11 +211,18 @@ target_compile_options(benchmark_nchwc PRIVATE
     -mfma
 )
 
-target_link_libraries(basic_engine PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_layer4_q8 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_packed_3x3 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_gemm3x3 PRIVATE OpenMP::OpenMP_CXX)
 target_link_libraries(benchmark_nchwc PRIVATE OpenMP::OpenMP_CXX)
+
+endif() # BUILD_EXPERIMENTS (reference benchmarks)
+
+# ---------------------------------------------------------------------------
+# Historical/experimental engines and benchmarks (blocked_engine prototype +
+# its supporting kernel sweeps). Not part of the submission's default build.
+# ---------------------------------------------------------------------------
+if(BUILD_EXPERIMENTS)
 
 # ---------------------------------------------------------------------------
 # Blocked engine: NCHWc16 activations + mullo_epi32 ternary conv prototype.
@@ -283,6 +305,16 @@ target_compile_definitions(benchmark_w16w32 PRIVATE NDEBUG)
 target_compile_options(benchmark_w16w32 PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma)
 target_link_libraries(benchmark_w16w32 PRIVATE OpenMP::OpenMP_CXX)
+
+endif() # BUILD_EXPERIMENTS (blocked_engine prototype + sweeps)
+
+# ---------------------------------------------------------------------------
+# Intermediate/historical Q2Q benchmarks: the step-by-step build-up (single
+# layer -> block -> stacks -> hybrid trunk -> conv1+maxpool -> full prefix)
+# that led to benchmark_q2q_full_prefix_optimized. Not part of the
+# submission's default build -- kept for reproducing the optimization history.
+# ---------------------------------------------------------------------------
+if(BUILD_Q2Q_EXPERIMENTS)
 
 # ---------------------------------------------------------------------------
 # Q2Q experimental engine: NHWC uint8 activations + dense ternary int8 weights
@@ -483,6 +515,16 @@ target_compile_options(benchmark_q2q_layer1_stack PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_layer1_stack PRIVATE OpenMP::OpenMP_CXX)
 
+endif() # BUILD_Q2Q_EXPERIMENTS (vnni..layer1_stack build-up)
+
+# ---------------------------------------------------------------------------
+# Winning Q2Q benchmarks: the standalone microkernel/conv1 validations behind
+# benchmark_q2q_full_prefix_optimized, kept buildable by default so reviewers
+# can reproduce the paired A/B/C wins without opting into every intermediate
+# experiment above.
+# ---------------------------------------------------------------------------
+if(BUILD_Q2Q_FINAL)
+
 # ---------------------------------------------------------------------------
 # Q2Q Phase 10, items 3-5: microkernel optimization A/B (paired, same data).
 # Every prior phase froze q2q_conv_bn_requant / vnni_oc4_dots /
@@ -533,6 +575,10 @@ target_compile_definitions(benchmark_q2q_conv1_opt PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_conv1_opt PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_conv1_opt PRIVATE OpenMP::OpenMP_CXX)
+
+endif() # BUILD_Q2Q_FINAL (microkernel_opt + conv1_opt)
+
+if(BUILD_Q2Q_EXPERIMENTS)
 
 # ---------------------------------------------------------------------------
 # Q2Q Phase 9: hybrid basic_engine + Q2Q/VNNI full-trunk benchmark.
@@ -647,15 +693,20 @@ target_compile_options(benchmark_q2q_full_prefix PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_full_prefix PRIVATE OpenMP::OpenMP_CXX)
 
+endif() # BUILD_Q2Q_EXPERIMENTS (hybrid_trunk, conv1_maxpool, full_prefix)
+
 # ---------------------------------------------------------------------------
-# benchmark_q2q_full_prefix_optimized -- Phase 10 item 6: re-run the full Q2Q
-# prefix with items 3-5's validated microkernel optimizations wired in
-# (q2q_conv_bn_requant_apanel + q2q_residual_add_relu_avx2 replacing the
-# baseline dense-conv/residual kernels for layer1-4; conv1/maxpool unchanged).
+# benchmark_q2q_full_prefix_optimized -- the winning Q2Q full-prefix benchmark:
+# the validated microkernel optimizations wired in (q2q_conv_bn_requant_apanel
+# + q2q_residual_add_relu_avx2 replacing the baseline dense-conv/residual
+# kernels for layer1-4, plus the fast-gather + SIMD-epilogue conv1 kernel).
 # Measures baseline-kernel and optimized-kernel pipelines back-to-back in one
 # binary, plus the live basic_engine full-model gate. Needs the full
-# resnet18_engine.cpp dependency chain for that baseline.
+# resnet18_engine.cpp dependency chain for that baseline. Part of the
+# submission's default build (BUILD_Q2Q_FINAL=ON).
 # ---------------------------------------------------------------------------
+if(BUILD_Q2Q_FINAL)
+
 add_executable(benchmark_q2q_full_prefix_optimized
     src/q2q_engine/benchmark_q2q_full_prefix_optimized.cpp
     src/basic_engine/model_loader.cpp
@@ -682,3 +733,5 @@ target_compile_definitions(benchmark_q2q_full_prefix_optimized PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_full_prefix_optimized PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_full_prefix_optimized PRIVATE OpenMP::OpenMP_CXX)
+
+endif() # BUILD_Q2Q_FINAL (full_prefix_optimized)
