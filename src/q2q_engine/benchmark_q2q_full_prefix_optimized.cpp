@@ -39,6 +39,7 @@
 #include "ops.hpp"
 
 #include <immintrin.h>
+#include <omp.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -236,46 +237,62 @@ static void q2q_conv1_im2col_bn_relu_requant(
     const int8_t*  base_panel = panel.data.data();
     uint8_t*       base_out   = y.data.data();
 
-    std::vector<uint8_t> a_panel(K_PAD + 4, uint8_t(0));  // +4 slack for the 4-byte gather tail write
+    // Precompute per-OC scale/bias once -- shared, read-only across threads.
+    std::vector<float> s_all((size_t)OC_TILES * OC_TILE), b_all((size_t)OC_TILES * OC_TILE);
+    for (int oc_tile = 0; oc_tile < OC_TILES; ++oc_tile) {
+        const int oc_base = oc_tile * OC_TILE;
+        for (int j = 0; j < OC_TILE; ++j) {
+            s_all[oc_base + j] = bn.scale[oc_base + j] * dq;
+            b_all[oc_base + j] = bn.bias[oc_base + j];
+        }
+    }
 
-    for (int oh = 0; oh < OH; ++oh) {
-        const int ih0 = oh * stride - conv.pad_h + b;
-        uint8_t* out_row = base_out + ((size_t)(oh + y.border) * y.W + y.border) * y.C;
-        for (int ow = 0; ow < OW; ++ow) {
-            const int iw0 = ow * stride - conv.pad_w + b;
-            conv1_gather_fast(base_in, x.W, x.C, ih0, iw0, KH, KW, IC, a_panel.data());
-            for (int kg = K_FULL; kg < K_PAD; ++kg) a_panel[kg] = 0;
+    // Phase 12: parallelize over output rows (M = OH*OW = 12544 >> 196, so a
+    // row-granularity m_tile gives every thread plenty of independent work).
+    // Each thread packs its OWN a_panel buffer once (outside the #pragma omp
+    // for) and reuses it across all rows it's assigned -- "thread-local A-panel,
+    // not shared, no malloc inside the timed loop" per spec: this allocates
+    // K_PAD+4 (~164) bytes once per thread per call, not per pixel.
+    #pragma omp parallel
+    {
+        std::vector<uint8_t> a_panel(K_PAD + 4, uint8_t(0));  // +4 slack for the 4-byte gather tail write
 
-            uint8_t* out_px = out_row + (size_t)ow * y.C;
-            for (int oc_tile = 0; oc_tile < OC_TILES; ++oc_tile) {
-                const int oc_base = oc_tile * OC_TILE;
-                __m256i acc0 = _mm256_setzero_si256();
-                __m256i acc1 = _mm256_setzero_si256();
-                __m256i acc2 = _mm256_setzero_si256();
-                __m256i acc3 = _mm256_setzero_si256();
-                const int8_t* panel_tile = base_panel + (size_t)oc_tile * IC_CHUNKS * OC_TILE * K_CHUNK;
-                for (int icc = 0; icc < IC_CHUNKS; ++icc) {
-                    const __m256i a32 = _mm256_loadu_si256(
-                        reinterpret_cast<const __m256i*>(a_panel.data() + (size_t)icc * K_CHUNK));
-                    const int8_t* wp = panel_tile + (size_t)icc * OC_TILE * K_CHUNK;
-                    const __m256i w0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 0*K_CHUNK));
-                    const __m256i w1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 1*K_CHUNK));
-                    const __m256i w2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 2*K_CHUNK));
-                    const __m256i w3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 3*K_CHUNK));
-                    acc0 = _mm256_dpbusd_epi32(acc0, a32, w0);
-                    acc1 = _mm256_dpbusd_epi32(acc1, a32, w1);
-                    acc2 = _mm256_dpbusd_epi32(acc2, a32, w2);
-                    acc3 = _mm256_dpbusd_epi32(acc3, a32, w3);
+        #pragma omp for schedule(static)
+        for (int oh = 0; oh < OH; ++oh) {
+            const int ih0 = oh * stride - conv.pad_h + b;
+            uint8_t* out_row = base_out + ((size_t)(oh + y.border) * y.W + y.border) * y.C;
+            for (int ow = 0; ow < OW; ++ow) {
+                const int iw0 = ow * stride - conv.pad_w + b;
+                conv1_gather_fast(base_in, x.W, x.C, ih0, iw0, KH, KW, IC, a_panel.data());
+                for (int kg = K_FULL; kg < K_PAD; ++kg) a_panel[kg] = 0;
+
+                uint8_t* out_px = out_row + (size_t)ow * y.C;
+                for (int oc_tile = 0; oc_tile < OC_TILES; ++oc_tile) {
+                    const int oc_base = oc_tile * OC_TILE;
+                    __m256i acc0 = _mm256_setzero_si256();
+                    __m256i acc1 = _mm256_setzero_si256();
+                    __m256i acc2 = _mm256_setzero_si256();
+                    __m256i acc3 = _mm256_setzero_si256();
+                    const int8_t* panel_tile = base_panel + (size_t)oc_tile * IC_CHUNKS * OC_TILE * K_CHUNK;
+                    for (int icc = 0; icc < IC_CHUNKS; ++icc) {
+                        const __m256i a32 = _mm256_loadu_si256(
+                            reinterpret_cast<const __m256i*>(a_panel.data() + (size_t)icc * K_CHUNK));
+                        const int8_t* wp = panel_tile + (size_t)icc * OC_TILE * K_CHUNK;
+                        const __m256i w0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 0*K_CHUNK));
+                        const __m256i w1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 1*K_CHUNK));
+                        const __m256i w2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 2*K_CHUNK));
+                        const __m256i w3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wp + 3*K_CHUNK));
+                        acc0 = _mm256_dpbusd_epi32(acc0, a32, w0);
+                        acc1 = _mm256_dpbusd_epi32(acc1, a32, w1);
+                        acc2 = _mm256_dpbusd_epi32(acc2, a32, w2);
+                        acc3 = _mm256_dpbusd_epi32(acc3, a32, w3);
+                    }
+                    const int32_t d0 = hsum_epi32(acc0), d1 = hsum_epi32(acc1);
+                    const int32_t d2 = hsum_epi32(acc2), d3 = hsum_epi32(acc3);
+
+                    epilogue_oc4_simd(d0, d1, d2, d3, &s_all[oc_base], &b_all[oc_base],
+                                      /*relu=*/true, inv_out_scale, out_px + oc_base);
                 }
-                const int32_t d0 = hsum_epi32(acc0), d1 = hsum_epi32(acc1);
-                const int32_t d2 = hsum_epi32(acc2), d3 = hsum_epi32(acc3);
-
-                float s[OC_TILE], bb[OC_TILE];
-                for (int j = 0; j < OC_TILE; ++j) {
-                    s[j] = bn.scale[oc_base + j] * dq;
-                    bb[j] = bn.bias[oc_base + j];
-                }
-                epilogue_oc4_simd(d0, d1, d2, d3, s, bb, /*relu=*/true, inv_out_scale, out_px + oc_base);
             }
         }
     }
@@ -288,6 +305,10 @@ static void q8_maxpool_3x3_s2_p1(const QTensorNHWC& x, int OH, int OW, QTensorNH
     const uint8_t* base_in  = x.data.data();
     uint8_t*       base_out = y.data.data();
 
+    // Phase 12: parallelize over output rows -- each row reads an overlapping
+    // (read-only, safe) 3-row band of the input and writes a disjoint output
+    // row, so there are no races.
+    #pragma omp parallel for schedule(static)
     for (int oh = 0; oh < OH; ++oh) {
         uint8_t* out_row = base_out + ((size_t)(oh + y.border) * y.W + y.border) * C;
         for (int ow = 0; ow < OW; ++ow) {
@@ -548,16 +569,29 @@ static void q2q_conv_bn_requant_apanel(
     const int8_t*  base_panel = panel.data();
     uint8_t*       base_out   = y.data.data();
 
-    for (int oc_tile = 0; oc_tile < OC_TILES; ++oc_tile) {
-        const int oc_base = oc_tile * OC_TILE;
-        float s[OC_TILE], b[OC_TILE];
-        for (int j = 0; j < OC_TILE; ++j) {
-            s[j] = bn.scale[oc_base + j] * dq;
-            b[j] = bn.bias[oc_base + j];
-        }
-        const int8_t* panel_tile = base_panel + (size_t)oc_tile * st.st_oct;
+    // Precompute per-OC scale/bias once -- tiny (OC floats each), read-only,
+    // shared across threads. This keeps the (oc_tile, oh) loop nest perfectly
+    // collapsible (OpenMP collapse() requires no code between the collapsed
+    // loop heads).
+    std::vector<float> s_all((size_t)OC), b_all((size_t)OC);
+    for (int oc = 0; oc < OC; ++oc) {
+        s_all[oc] = bn.scale[oc] * dq;
+        b_all[oc] = bn.bias[oc];
+    }
 
+    // Phase 12: parallelize over the flattened (oc_tile, oh) task space via
+    // collapse(2). Each task writes a disjoint OC_TILE-channel x one-output-row
+    // region (oc_base..oc_base+3, row oh) -- no overlap, no races. Flattening
+    // both dimensions (rather than just oh) gives every thread count plenty of
+    // independent units even for layer4's small spatial extent (OH=7,
+    // OC_TILES=128 -> 896 tasks vs. just 7 if parallelizing over oh alone).
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int oc_tile = 0; oc_tile < OC_TILES; ++oc_tile) {
         for (int oh = 0; oh < OH; ++oh) {
+            const int oc_base = oc_tile * OC_TILE;
+            const float* s = &s_all[oc_base];
+            const float* b = &b_all[oc_base];
+            const int8_t* panel_tile = base_panel + (size_t)oc_tile * st.st_oct;
             uint8_t* out_row = base_out + ((size_t)(oh + y.border) * y.W + y.border) * y.C + oc_base;
             if (use_n2) {
                 for (int ow = 0; ow < OW; ow += 2) {
@@ -596,14 +630,16 @@ static void q2q_residual_add_relu_avx2(
     const uint8_t* bbase = b.data.data();
     uint8_t* ybase = y.data.data();
 
+    // Phase 12: parallelize over the flattened (h, w) element-tile space --
+    // collapsing both spatial dims (rather than just rows) keeps every thread
+    // fed even for layer4's small H*W=49; each (h,w) tile writes a disjoint
+    // C-channel run of the output, so there are no races.
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int h = 0; h < H; ++h) {
-        const uint8_t* a_row = abase + ((size_t)(h + a.border) * a.W + a.border) * C;
-        const uint8_t* b_row = bbase + ((size_t)(h + b.border) * b.W + b.border) * C;
-        uint8_t*       y_row = ybase + ((size_t)(h + y.border) * y.W + y.border) * C;
         for (int w = 0; w < W; ++w) {
-            const uint8_t* ap = a_row + (size_t)w * C;
-            const uint8_t* bp = b_row + (size_t)w * C;
-            uint8_t*       yp = y_row + (size_t)w * C;
+            const uint8_t* ap = abase + ((size_t)(h + a.border) * a.W + a.border) * C + (size_t)w * C;
+            const uint8_t* bp = bbase + ((size_t)(h + b.border) * b.W + b.border) * C + (size_t)w * C;
+            uint8_t*       yp = ybase + ((size_t)(h + y.border) * y.W + y.border) * C + (size_t)w * C;
             for (int c = 0; c < C; c += 8) {
                 const __m128i a8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(ap + c));
                 const __m128i b8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(bp + c));
@@ -655,9 +691,25 @@ static std::vector<float> read_f32_file(const std::string& path, size_t expected
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <model.bin>\n";
+        std::cerr << "Usage: " << argv[0] << " <model.bin> [--threads N]\n";
         return 1;
     }
+
+    int threads = 1;
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--threads" && i + 1 < argc) {
+            threads = std::stoi(argv[++i]);
+        } else {
+            std::cerr << "Unknown argument: " << arg << "\n";
+            return 1;
+        }
+    }
+    if (threads < 1) {
+        std::cerr << "--threads must be >= 1\n";
+        return 1;
+    }
+    omp_set_num_threads(threads);
 
     try {
         const Model model = load_model(argv[1]);
@@ -730,6 +782,9 @@ int main(int argc, char* argv[]) {
                      "(~4.6x standalone win, validated in benchmark_q2q_conv1_opt); "
                      "maxpool stays q8-direct/unchanged\n";
         std::cout << "  ACT_SCALE: " << ACT_SCALE << "\n";
+        std::cout << "  Phase 12: optimized-path kernels (conv1, layer1-4 conv/residual, maxpool) "
+                     "now run multi-threaded via OpenMP -- requested threads: " << threads
+                  << " (omp_get_max_threads() = " << omp_get_max_threads() << ")\n";
 
         // ---- live basic_engine full-model baseline ----
         Tensor golden_input(3, 224, 224);
