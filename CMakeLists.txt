@@ -242,3 +242,23 @@ target_compile_options(blocked_engine PRIVATE
 )
 
 target_link_libraries(blocked_engine PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# benchmark_cbhwb: CB_H_WB_CI_WI_EXT sparse OW8 kernel (runtime-only).
+# Layer2.1.conv2 only. No correctness check.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_cbhwb
+    src/basic_engine/benchmark_cbhwb.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_cbhwb PRIVATE src/basic_engine)
+target_compile_definitions(benchmark_cbhwb PRIVATE NDEBUG)
+target_compile_options(benchmark_cbhwb PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma)
+target_link_libraries(benchmark_cbhwb PRIVATE OpenMP::OpenMP_CXX)
