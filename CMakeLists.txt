@@ -482,3 +482,42 @@ target_compile_definitions(benchmark_q2q_layer1_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_layer1_stack PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_layer1_stack PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 9: hybrid basic_engine + Q2Q/VNNI full-trunk benchmark.
+# basic_engine: conv1 + maxpool + layer1 (layer1's Q2Q result was marginal,
+# ~1.03x -- stays on basic_engine). Q2Q/VNNI: layer2 + layer3 + layer4
+# (validated trunk, ~1.85-1.88x). basic_engine ops: avgpool + fc. Captures a
+# REAL FP32 activation at the layer1/layer2 boundary via one live forward pass
+# through forward_resnet18_scalar_timed with the existing tensor-dump hook --
+# not synthetic data -- then measures the full hybrid pipeline end-to-end
+# against a live-measured basic_engine full-model baseline. Needs the full
+# resnet18_engine.cpp (and its AVX2/quantized kernel deps) because this is the
+# first Q2Q benchmark to drive real basic_engine forward passes.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_hybrid_trunk
+    src/q2q_engine/benchmark_q2q_hybrid_trunk.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/resnet18_engine.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_avx2.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/conv3x3_sparse_ocblock_avx2.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock2_avx2.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv3x3_pattern_ocblock4_avx2.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_avx2.cpp
+    src/basic_engine/quantized/quant_utils.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock4_avx2.cpp
+    src/basic_engine/quantized/conv3x3_q8_pattern_ocblock2_avx2.cpp
+    src/basic_engine/quantized/conv1x1_q8_s2_avx2.cpp
+)
+target_include_directories(benchmark_q2q_hybrid_trunk PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_hybrid_trunk PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_hybrid_trunk PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_hybrid_trunk PRIVATE OpenMP::OpenMP_CXX)
