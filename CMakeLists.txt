@@ -304,3 +304,4 @@ target_include_directories(benchmark_q2q_vnni PRIVATE src/basic_engine src/q2q_e
 target_compile_definitions(benchmark_q2q_vnni PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_vnni PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_vnni PRIVATE OpenMP::OpenMP_CXX)
