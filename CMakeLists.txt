@@ -283,3 +283,24 @@ target_compile_definitions(benchmark_w16w32 PRIVATE NDEBUG)
 target_compile_options(benchmark_w16w32 PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma)
 target_link_libraries(benchmark_w16w32 PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q experimental engine: NHWC uint8 activations + dense ternary int8 weights
+# + AVX-VNNI dpbusd_epi32. Separate from basic_engine/blocked_engine — shares
+# only the model loader and BN fusion. Phase 1: standalone single-layer
+# benchmark for layer2.1.conv2 (gate: total<=2.13ms continue, <=1.5ms strong).
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_vnni
+    src/q2q_engine/benchmark_q2q_vnni.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_vnni PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_vnni PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_vnni PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
