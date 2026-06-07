@@ -431,3 +431,28 @@ target_compile_definitions(benchmark_q2q_layer4_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_layer4_stack PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_layer4_stack PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 7: combined layer2+3+4 stack, q8-to-q8 end-to-end with NO FP32
+# materialization at ANY stack boundary -- each stack's q8 block output feeds
+# the next stack's conv1/downsample directly. Verifies the validated per-stack
+# speedups (1.48x / ~2.05x / ~2.1x) survive across the entire deep ResNet
+# trunk. Reuses every kernel byte-for-byte from the per-stack benchmarks --
+# pure orchestration. Gate: layer234_q2q_only must beat the measured
+# basic_engine combined cost (~32.37 ms, q8 OCBlock2 bucket, 1T).
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_layer234_stack
+    src/q2q_engine/benchmark_q2q_layer234_stack.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_layer234_stack PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_layer234_stack PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_layer234_stack PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_layer234_stack PRIVATE OpenMP::OpenMP_CXX)
