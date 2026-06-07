@@ -484,6 +484,35 @@ target_compile_options(benchmark_q2q_layer1_stack PRIVATE
 target_link_libraries(benchmark_q2q_layer1_stack PRIVATE OpenMP::OpenMP_CXX)
 
 # ---------------------------------------------------------------------------
+# Q2Q Phase 10, items 3-5: microkernel optimization A/B (paired, same data).
+# Every prior phase froze q2q_conv_bn_requant / vnni_oc4_dots /
+# q2q_residual_add_relu as byte-identical/"do not tune" -- this phase reverses
+# that and proposes three optimizations, each timed paired against its
+# baseline in one binary: (3) vnni_oc4_n2_dots "A-panel" register-blocked
+# N_TILE=2 VNNI core for stride=1 dense convs, (4) AVX2 8-wide vectorized q8
+# residual add+ReLU+requantize, (5) epilogue_oc4_simd vectorized BN+ReLU+
+# requantize epilogue (replaces 4x scalar std::lround+clamp+byte-store with
+# one SSE float pipeline + one 4-byte store). Only needs the plan-builder
+# chain (no AVX2 conv kernels, no resnet18_engine -- standalone microkernel
+# comparison, not a model forward pass).
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_microkernel_opt
+    src/q2q_engine/benchmark_q2q_microkernel_opt.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_microkernel_opt PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_microkernel_opt PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_microkernel_opt PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_microkernel_opt PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
 # Q2Q Phase 9: hybrid basic_engine + Q2Q/VNNI full-trunk benchmark.
 # basic_engine: conv1 + maxpool + layer1 (layer1's Q2Q result was marginal,
 # ~1.03x -- stays on basic_engine). Q2Q/VNNI: layer2 + layer3 + layer4
