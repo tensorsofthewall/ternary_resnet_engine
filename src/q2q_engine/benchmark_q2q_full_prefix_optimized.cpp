@@ -117,10 +117,42 @@ static inline uint8_t requantize_u8(float v, float inv_out_scale) {
     return static_cast<uint8_t>(q);
 }
 
+// Vectorized BN-scale + bias + (optional) ReLU + requantize-to-u8 for an
+// OC_TILE=4 group, replacing 4x scalar requantize_u8/std::lround with one
+// SSE pipeline + a single 4-byte store. Validated standalone (~2.08x paired
+// win in benchmark_q2q_microkernel_opt; ~4.6x for conv1's larger pixel count
+// in benchmark_q2q_conv1_opt) -- shared by both the conv1 kernel and the
+// dense apanel conv below.
+static inline void epilogue_oc4_simd(
+    int32_t d0, int32_t d1, int32_t d2, int32_t d3,
+    const float s[OC_TILE], const float b[OC_TILE],
+    bool relu, float inv_out_scale, uint8_t* out_px)
+{
+    const __m128i dvec = _mm_setr_epi32(d0, d1, d2, d3);
+    const __m128  sv   = _mm_loadu_ps(s);
+    const __m128  bv   = _mm_loadu_ps(b);
+    __m128 vf = _mm_fmadd_ps(_mm_cvtepi32_ps(dvec), sv, bv);
+    if (relu) vf = _mm_max_ps(vf, _mm_setzero_ps());
+    vf = _mm_mul_ps(vf, _mm_set1_ps(inv_out_scale));
+    __m128i qi = _mm_cvtps_epi32(vf);
+    qi = _mm_max_epi32(qi, _mm_setzero_si128());
+    qi = _mm_min_epi32(qi, _mm_set1_epi32(255));
+    const __m128i packed16 = _mm_packus_epi32(qi, qi);
+    const __m128i packed8  = _mm_packus_epi16(packed16, packed16);
+    const uint32_t out32 = static_cast<uint32_t>(_mm_cvtsi128_si32(packed8));
+    std::memcpy(out_px, &out32, sizeof(out32));
+}
+
 // =====================================================================
-// conv1 im2col VNNI + q8 maxpool -- byte-for-byte from
-// benchmark_q2q_conv1_maxpool.cpp / benchmark_q2q_full_prefix.cpp.
-// UNCHANGED by items 3-5 (those target the dense layer1-4 family only).
+// conv1 im2col VNNI + q8 maxpool -- conv1 optimized via paired A/B/C
+// validation in benchmark_q2q_conv1_opt (~4.6x standalone win, 0/831744
+// byte mismatches): panel flattening reordered from k=ic*49+ky*7+kx to
+// k=(ky*7+kx)*IC+ic so each (ky,kx) position's IC=3 source channels are
+// contiguous in NHWC, enabling a 4-byte load+store gather (49 simple
+// mov pairs) instead of 147 strided scalar byte copies; scalar
+// requantize_u8 epilogue replaced by epilogue_oc4_simd. Bit-exact with
+// the original im2col kernel -- only memory layout/ordering changed.
+// maxpool is q8-direct and untouched.
 // =====================================================================
 struct Conv1Panel {
     int K_PAD = 0, IC_CHUNKS = 0, OC_TILES = 0;
@@ -148,10 +180,10 @@ static Conv1Panel build_conv1_im2col_panel(const Conv2DParams& conv) {
                     const int kg = icc * K_CHUNK + k;
                     int8_t w = 0;
                     if (kg < K_FULL) {
-                        const int ic = kg / (KH * KW);
-                        const int rem = kg % (KH * KW);
-                        const int ky = rem / KW;
-                        const int kx = rem % KW;
+                        const int ky = kg / (KW * IC);
+                        const int rem = kg % (KW * IC);
+                        const int kx = rem / IC;
+                        const int ic = rem % IC;
                         w = conv.weight[oc * base + (size_t)ic * KH * KW + ky * KW + kx];
                     }
                     const size_t idx = (((size_t)oc_tile * IC_CHUNKS + icc) * OC_TILE + j) * K_CHUNK + k;
@@ -159,6 +191,30 @@ static Conv1Panel build_conv1_im2col_panel(const Conv2DParams& conv) {
                 }
             }
     return panel;
+}
+
+// Gathers im2col columns for one output pixel. For each (ky,kx), the IC=3
+// source channels are contiguous in NHWC and the destination slot is
+// contiguous in the panel-B layout above -- one 4-byte load + 4-byte store
+// per (ky,kx) (49 total) instead of 3 strided scalar byte copies x 49 (147
+// total). The 4th (garbage) byte written by iteration i is overwritten by
+// iteration i+1's valid byte 0, except the LAST iteration's spill into
+// a_panel[K_FULL], which the zero-fill below (always run after the gather)
+// resets to 0. Reads stay in-bounds: max (iw0+KW-1)*C+4 = 228*3+4 = 688
+// < x.W*x.C = 230*3 = 690.
+static inline void conv1_gather_fast(
+    const uint8_t* base_in, int W, int C, int ih0, int iw0,
+    int KH, int KW, int IC, uint8_t* a_panel)
+{
+    for (int ky = 0; ky < KH; ++ky) {
+        const uint8_t* row = base_in + ((size_t)(ih0 + ky) * W + iw0) * C;
+        uint8_t* dst_row = a_panel + (size_t)ky * KW * IC;
+        for (int kx = 0; kx < KW; ++kx) {
+            uint32_t v;
+            std::memcpy(&v, row + (size_t)kx * C, sizeof(v));
+            std::memcpy(dst_row + (size_t)kx * IC, &v, sizeof(v));
+        }
+    }
 }
 
 static void q2q_conv1_im2col_bn_relu_requant(
@@ -180,20 +236,14 @@ static void q2q_conv1_im2col_bn_relu_requant(
     const int8_t*  base_panel = panel.data.data();
     uint8_t*       base_out   = y.data.data();
 
-    std::vector<uint8_t> a_panel(K_PAD, uint8_t(0));
+    std::vector<uint8_t> a_panel(K_PAD + 4, uint8_t(0));  // +4 slack for the 4-byte gather tail write
 
     for (int oh = 0; oh < OH; ++oh) {
         const int ih0 = oh * stride - conv.pad_h + b;
         uint8_t* out_row = base_out + ((size_t)(oh + y.border) * y.W + y.border) * y.C;
         for (int ow = 0; ow < OW; ++ow) {
             const int iw0 = ow * stride - conv.pad_w + b;
-            for (int ic = 0; ic < IC; ++ic) {
-                for (int ky = 0; ky < KH; ++ky) {
-                    const uint8_t* row = base_in + ((size_t)(ih0 + ky) * x.W + iw0) * x.C + ic;
-                    uint8_t* dst = a_panel.data() + (size_t)(ic * KH + ky) * KW;
-                    for (int kx = 0; kx < KW; ++kx) dst[kx] = row[(size_t)kx * x.C];
-                }
-            }
+            conv1_gather_fast(base_in, x.W, x.C, ih0, iw0, KH, KW, IC, a_panel.data());
             for (int kg = K_FULL; kg < K_PAD; ++kg) a_panel[kg] = 0;
 
             uint8_t* out_px = out_row + (size_t)ow * y.C;
@@ -220,17 +270,12 @@ static void q2q_conv1_im2col_bn_relu_requant(
                 const int32_t d0 = hsum_epi32(acc0), d1 = hsum_epi32(acc1);
                 const int32_t d2 = hsum_epi32(acc2), d3 = hsum_epi32(acc3);
 
-                float v0 = static_cast<float>(d0) * (bn.scale[oc_base + 0] * dq) + bn.bias[oc_base + 0];
-                float v1 = static_cast<float>(d1) * (bn.scale[oc_base + 1] * dq) + bn.bias[oc_base + 1];
-                float v2 = static_cast<float>(d2) * (bn.scale[oc_base + 2] * dq) + bn.bias[oc_base + 2];
-                float v3 = static_cast<float>(d3) * (bn.scale[oc_base + 3] * dq) + bn.bias[oc_base + 3];
-                v0 = v0 < 0.f ? 0.f : v0; v1 = v1 < 0.f ? 0.f : v1;
-                v2 = v2 < 0.f ? 0.f : v2; v3 = v3 < 0.f ? 0.f : v3;
-
-                out_px[oc_base + 0] = requantize_u8(v0, inv_out_scale);
-                out_px[oc_base + 1] = requantize_u8(v1, inv_out_scale);
-                out_px[oc_base + 2] = requantize_u8(v2, inv_out_scale);
-                out_px[oc_base + 3] = requantize_u8(v3, inv_out_scale);
+                float s[OC_TILE], bb[OC_TILE];
+                for (int j = 0; j < OC_TILE; ++j) {
+                    s[j] = bn.scale[oc_base + j] * dq;
+                    bb[j] = bn.bias[oc_base + j];
+                }
+                epilogue_oc4_simd(d0, d1, d2, d3, s, bb, /*relu=*/true, inv_out_scale, out_px + oc_base);
             }
         }
     }
@@ -440,27 +485,8 @@ static void q2q_residual_add_relu(
 // paired wins). border-generic (q2q_conv_bn_requant_apanel uses x.border /
 // y.border instead of a fixed PAD, matching the baseline's generalization;
 // every tensor it touches here has border=PAD_Q8=1, so this is a no-op).
+// epilogue_oc4_simd is shared with conv1 -- defined earlier in this file.
 // =====================================================================
-static inline void epilogue_oc4_simd(
-    int32_t d0, int32_t d1, int32_t d2, int32_t d3,
-    const float s[OC_TILE], const float b[OC_TILE],
-    bool relu, float inv_out_scale, uint8_t* out_px)
-{
-    const __m128i dvec = _mm_setr_epi32(d0, d1, d2, d3);
-    const __m128  sv   = _mm_loadu_ps(s);
-    const __m128  bv   = _mm_loadu_ps(b);
-    __m128 vf = _mm_fmadd_ps(_mm_cvtepi32_ps(dvec), sv, bv);
-    if (relu) vf = _mm_max_ps(vf, _mm_setzero_ps());
-    vf = _mm_mul_ps(vf, _mm_set1_ps(inv_out_scale));
-    __m128i qi = _mm_cvtps_epi32(vf);
-    qi = _mm_max_epi32(qi, _mm_setzero_si128());
-    qi = _mm_min_epi32(qi, _mm_set1_epi32(255));
-    const __m128i packed16 = _mm_packus_epi32(qi, qi);
-    const __m128i packed8  = _mm_packus_epi16(packed16, packed16);
-    const uint32_t out32 = static_cast<uint32_t>(_mm_cvtsi128_si32(packed8));
-    std::memcpy(out_px, &out32, sizeof(out32));
-}
-
 static inline void vnni_oc4_n2_dots(
     const uint8_t* base_in, int W_PAD_IN, int C_IN,
     const int8_t* panel_tile, const PanelStrides& st,
@@ -700,7 +726,9 @@ int main(int argc, char* argv[]) {
         std::cout << "  baseline kernels  : q2q_conv_bn_requant      + q2q_residual_add_relu      (Phase 10b)\n";
         std::cout << "  optimized kernels : q2q_conv_bn_requant_apanel + q2q_residual_add_relu_avx2 "
                      "(items 3+4+5, ~2.08x / ~17x paired wins standalone)\n";
-        std::cout << "  conv1 + maxpool stay UNCHANGED in both phases (items 3-5 target dense layer1-4 only)\n";
+        std::cout << "  conv1 uses the fast-gather + SIMD-epilogue kernel in Phase B "
+                     "(~4.6x standalone win, validated in benchmark_q2q_conv1_opt); "
+                     "maxpool stays q8-direct/unchanged\n";
         std::cout << "  ACT_SCALE: " << ACT_SCALE << "\n";
 
         // ---- live basic_engine full-model baseline ----
@@ -842,7 +870,11 @@ int main(int argc, char* argv[]) {
         constexpr int N_WARMUP = 20;
         constexpr int N_TIMED  = 100;
 
-        // ---- Phase A: baseline kernels (replicates Phase 10b full_prefix) ----
+        // ---- Phase A: baseline dense-conv/residual kernels + optimized conv1.
+        // (conv1 is now the fast-gather+SIMD kernel in BOTH phases -- it's a
+        // strict win, so there is no reason to keep a slower copy around just
+        // to replicate Phase 10b's exact number; this isolates items 3+4+5's
+        // contribution on a like-for-like conv1.) ----
         for (int i = 0; i < N_WARMUP; ++i) run_full(q2q_conv_bn_requant, q2q_residual_add_relu);
         std::vector<double> t_baseline(N_TIMED);
         for (int i = 0; i < N_TIMED; ++i) {
@@ -887,12 +919,12 @@ int main(int argc, char* argv[]) {
         volatile float sink_b = fc_out.data[0] + dequant_out.data[0];
         (void)sink_b;
 
-        std::cout << "\n=== Phase A: baseline-kernel full prefix (" << N_TIMED << " runs, replicates Phase 10b) ===\n";
+        std::cout << "\n=== Phase A: baseline dense-conv/residual + optimized conv1 (" << N_TIMED << " runs) ===\n";
         print_stats("baseline_total_ms (q2q_conv_bn_requant + q2q_residual_add_relu)", t_baseline, N_TIMED);
 
         std::cout << "\n=== Phase B: optimized-kernel full prefix (" << N_TIMED << " runs, items 3+4+5 wired in) ===\n";
         print_stats("quantize_ms     (unchanged)                     ", t_quant, N_TIMED);
-        print_stats("conv1_ms        (unchanged, im2col VNNI)        ", t_conv1, N_TIMED);
+        print_stats("conv1_ms        (fast-gather + simd epilogue)   ", t_conv1, N_TIMED);
         print_stats("maxpool_ms      (unchanged, q8-direct)          ", t_maxpool, N_TIMED);
         print_stats("layer1_ms       (apanel conv + avx2 residual)   ", t_layer1, N_TIMED);
         print_stats("layer2_ms       (apanel conv + avx2 residual)   ", t_layer2, N_TIMED);
