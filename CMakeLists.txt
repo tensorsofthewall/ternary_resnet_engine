@@ -456,3 +456,29 @@ target_compile_definitions(benchmark_q2q_layer234_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_layer234_stack PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_layer234_stack PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 8: full layer1 stack (layer1.0 + layer1.1), q8-to-q8 end-to-end.
+# Structurally simpler than layer2/3/4: pure identity shortcuts (IC==OC==64,
+# stride=1, no downsample projection) -- but the inverse regime of layer4:
+# largest spatial extent (56x56 = 3136 output pixels) at the network's
+# smallest K (64). Tests whether VNNI's throughput edge still wins when
+# per-pixel work is minimal and pixel count is maximal. Reuses every kernel
+# byte-for-byte from earlier stack benchmarks. Gate: q2q_only must beat the
+# measured basic_engine layer1 stack (~9.26 ms, q8 OCBlock2 bucket, 1T).
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_layer1_stack
+    src/q2q_engine/benchmark_q2q_layer1_stack.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_layer1_stack PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_layer1_stack PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_layer1_stack PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_layer1_stack PRIVATE OpenMP::OpenMP_CXX)
