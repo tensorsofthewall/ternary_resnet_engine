@@ -328,3 +328,28 @@ target_compile_definitions(benchmark_q2q_block PRIVATE NDEBUG)
 target_compile_options(benchmark_q2q_block PRIVATE
     -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
 target_link_libraries(benchmark_q2q_block PRIVATE OpenMP::OpenMP_CXX)
+
+# ---------------------------------------------------------------------------
+# Q2Q Phase 3: full layer2 stack (layer2.0 + layer2.1), q8-to-q8 end-to-end.
+# layer2.0 adds conv1 stride-2, conv2 stride-1, a 1x1 stride-2 downsample
+# projection, and its own q8 residual add+ReLU, chained straight into the
+# validated layer2.1 block. One fused conv kernel (generalized for stride and
+# pad) serves all five convs. Gate: q2q_only must beat the measured
+# basic_engine layer2 stack (~10.28 ms, q8 OCBlock2 bucket, 1T) to proceed
+# toward layer3 / full ResNet.
+# ---------------------------------------------------------------------------
+add_executable(benchmark_q2q_layer2_stack
+    src/q2q_engine/benchmark_q2q_layer2_stack.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_q2q_layer2_stack PRIVATE src/basic_engine src/q2q_engine)
+target_compile_definitions(benchmark_q2q_layer2_stack PRIVATE NDEBUG)
+target_compile_options(benchmark_q2q_layer2_stack PRIVATE
+    -O3 -march=native -Wall -Wextra -Wpedantic -mavx2 -mfma -mavxvnni)
+target_link_libraries(benchmark_q2q_layer2_stack PRIVATE OpenMP::OpenMP_CXX)
