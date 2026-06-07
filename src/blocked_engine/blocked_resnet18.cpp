@@ -22,28 +22,37 @@ std::vector<float> forward_blocked_resnet18(
     const BlockedModel& bm,
     const Tensor& input,
     BlockedEngineWorkspace& ws,
-    std::unordered_map<std::string, double>& /*timings*/)
+    std::unordered_map<std::string, double>& timings)
 {
     const Model& m = *bm.model;
 
-    // Lookup helpers — avoid repeated at() calls in the hot path.
     auto& bc = bm.blocked_convs;
     auto& fb = m.fused_bns;
 
-    // Shorthand: stride-1 conv3x3 + BN + optional ReLU.
+    auto now = []{ return std::chrono::high_resolution_clock::now(); };
+    auto ms = [](auto t0, auto t1){
+        return std::chrono::duration<double, std::milli>(t1 - t0).count();
+    };
+
+    // AVX2 sign_epi32 kernel for stride-1 and stride-2 3×3 convs.
     auto s1 = [&](const BlockedTensorFP32& x, const char* cn, const char* bn,
                    bool relu, BlockedTensorFP32& y) {
-        blocked_conv3x3_s1_ref(x, bc.at(cn), fb.at(bn), relu, y);
+        auto t0 = now();
+        blocked_conv3x3_s1_avx2(x, bc.at(cn), fb.at(bn), relu, y);
+        timings[cn] += ms(t0, now());
     };
-    // Stride-2 conv3x3.
     auto s2 = [&](const BlockedTensorFP32& x, const char* cn, const char* bn,
                    bool relu, BlockedTensorFP32& y) {
-        blocked_conv3x3_s2_ref(x, bc.at(cn), fb.at(bn), relu, y);
+        auto t0 = now();
+        blocked_conv3x3_s2_avx2(x, bc.at(cn), fb.at(bn), relu, y);
+        timings[cn] += ms(t0, now());
     };
-    // 1×1 stride-2 downsample conv.
+    // 1×1 stride-2 downsample — ref is fine; very cheap vs 3×3.
     auto ds = [&](const BlockedTensorFP32& x, const char* cn, const char* bn,
                    bool relu, BlockedTensorFP32& y) {
+        auto t0 = now();
         blocked_conv1x1_s2_ref(x, bc.at(cn), fb.at(bn), relu, y);
+        timings[cn] += ms(t0, now());
     };
 
     // ---- conv1 + bn1 + relu → maxpool ----

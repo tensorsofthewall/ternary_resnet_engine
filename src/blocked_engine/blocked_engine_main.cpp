@@ -46,9 +46,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Scalar reference is ~10–20s/pass. Phase 5 (AVX2) will use 20 warmup + 100 timed.
-    constexpr int N_WARMUP = 1;
-    constexpr int N_TIMED  = 3;
+    constexpr int N_WARMUP = 20;
+    constexpr int N_TIMED  = 100;
 
     try {
         std::cout << "Loading model...\n";
@@ -72,32 +71,43 @@ int main(int argc, char* argv[]) {
             forward_blocked_resnet18(bm, input, ws, timings);
 
         // Timed runs.
+        timings.clear();
         std::cout << "Timing (" << N_TIMED << " runs)...\n" << std::flush;
         std::vector<double> times;
         times.reserve(N_TIMED);
 
+        std::vector<float> probs;
         for (int i = 0; i < N_TIMED; ++i) {
             const auto t0 = std::chrono::high_resolution_clock::now();
-            const auto probs = forward_blocked_resnet18(bm, input, ws, timings);
+            probs = forward_blocked_resnet18(bm, input, ws, timings);
             const auto t1 = std::chrono::high_resolution_clock::now();
             times.push_back(elapsed_ms(t0, t1));
-
-            // Print top-1 on first timed run.
-            if (i == 0) {
-                const int top1 = static_cast<int>(
-                    std::max_element(probs.begin(), probs.end()) - probs.begin());
-                std::cout << "  top-1 class: " << top1
-                          << "  (p=" << probs[static_cast<size_t>(top1)] << ")\n";
-            }
         }
+
+        const int top1 = static_cast<int>(
+            std::max_element(probs.begin(), probs.end()) - probs.begin());
 
         std::sort(times.begin(), times.end());
         const double min_ms    = times.front();
         const double median_ms = times[times.size() / 2];
 
-        std::cout << "\n=== blocked_engine (scalar reference) ===\n";
+        std::cout << "\n=== blocked_engine (AVX2 sign_epi32 mullo) ===\n";
+        std::cout << "  top-1 class: " << top1
+                  << "  (p=" << probs[static_cast<size_t>(top1)] << ")\n";
         std::cout << "  min_ms:    " << min_ms    << "\n";
         std::cout << "  median_ms: " << median_ms << "\n";
+        std::cout << "  scalar ref baseline: ~397 ms\n";
+        std::cout << "  bucket baseline (layer2.1.conv2, basic_engine): 2.67 ms\n";
+
+        // Per-layer timing (averaged over N_TIMED runs), sorted by descending cost.
+        std::cout << "\n--- per-layer avg_ms (over " << N_TIMED << " runs) ---\n";
+        std::vector<std::pair<double, std::string>> layer_times;
+        layer_times.reserve(timings.size());
+        for (const auto& [name, total] : timings)
+            layer_times.emplace_back(total / N_TIMED, name);
+        std::sort(layer_times.rbegin(), layer_times.rend());
+        for (const auto& [t, name] : layer_times)
+            std::cout << "  " << name << ": " << t << " ms\n";
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
