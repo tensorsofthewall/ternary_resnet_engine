@@ -23,7 +23,7 @@ The repo contains two C++ engines:
 
 ---
 
-## Assignment Scope
+## Scope
 
 This project implements a standalone C++ inference engine for a ResNet-18 model with
 ternary weights (`{-1, 0, +1}`), targeting the following requirements:
@@ -289,9 +289,9 @@ artifacts/golden_logits_fp32.bin
 the exported ternary model (see "Generating Artifacts"). Every `basic_engine` run loads
 both, runs its own forward pass on the same input, and prints a `C++ engine vs PyTorch
 golden` block with `max_abs_error`/`mean_abs_error` against the reference logits — this is
-the engine directly satisfying the assignment's "inference engine output has to match the
+the engine directly satisfying the project's "inference engine output has to match the
 pytorch model's outputs" requirement, as distinct from classification accuracy (which the
-assignment explicitly excludes, since the model is randomly initialized and never trained —
+scope explicitly excludes, since the model is randomly initialized and never trained —
 see "Classification accuracy is not evaluated, but numerical output sanity is checked" in
 "Known Limitations").
 
@@ -649,7 +649,7 @@ string/map dispatch artifacts from downsample layer name lookups.
   lower baseline. ORT FP32 remains the most stable high-thread-count option (see "Current
   Benchmark Results").
 - **Classification accuracy is not evaluated, but numerical output sanity is checked**:
-  the assignment uses a randomly initialized, ternarized model, so top-1/top-5
+  the project uses a randomly initialized, ternarized model, so top-1/top-5
   classification accuracy is not meaningful and is not evaluated. Separately, the
   inference engine should still reproduce the PyTorch model's forward pass closely enough
   to validate that the implemented computation is the intended one.
@@ -819,7 +819,7 @@ done
 
 ## Submission Checklist
 
-This project satisfies the assignment requirements as follows:
+This project satisfies the requirements as follows:
 
 - [x] Both deliverable engines build and run cleanly with the default CMake configuration
       (`basic_engine`, `benchmark_q2q_full_prefix_optimized` — see "Build" and "Final vs
