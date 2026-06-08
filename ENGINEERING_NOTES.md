@@ -114,7 +114,7 @@ Profiling Findings").
 Like `basic_engine`, the Q2Q/VNNI engine calls no ORT, MLAS, oneDNN, MKL, OpenBLAS, or any
 other external GEMM/inference library — its panel builders, quantization, and dot-product
 kernels (`_mm256_dpbusd_epi32` and friends) are custom C++/intrinsics, written from
-scratch for this project (see "Assignment Scope" in README.md). ORT and PyTorch remain purely
+scratch for this project (see "Scope" in README.md). ORT and PyTorch remain purely
 benchmarking/reference tools: model export, golden-logit generation, and latency
 comparison — never part of either engine's inference path.
 
