@@ -9,7 +9,7 @@ This repo is intentionally an engineering study: it builds a working inference e
 profiles bottlenecks, implements specialized kernels, compares against ONNX Runtime, and
 documents both successful and reverted optimization attempts.
 
-The repo contains two C++ engines:
+The repo contains three C++ engines:
 
 - **`basic_engine`** — the original NCHW/ternary-sparse engine (pattern-grouped AVX2
   kernels, dynamic q8 activation quantization). It improves from a multi-second scalar
@@ -20,6 +20,13 @@ The repo contains two C++ engines:
   `AVX-VNNI` (`vpdpbusd`) dot-product kernels, and **beats both `basic_engine` and ORT
   INT8 end-to-end** (~14.9 ms vs ~44.8 ms vs ~19.8 ms median at 1 thread on the test
   machine — see "Current Benchmark Results").
+- **AVX2 block32 engine** (`src/nhwc_block32_engine/`) — a second, AVX2-only (no
+  `AVX-VNNI`) NHWC q8 pipeline using panel-im2col GEMM-style kernels
+  (`_mm256_maddubs_epi16` + `_mm256_madd_epi16`). Its final (`opt5`) variant reaches
+  **~19.5 ms median at 1 thread, roughly matching ORT INT8** (~19.7 ms) without any
+  VNNI instructions, and is now OpenMP-parallel for thread-scaling comparisons (see
+  "Current Benchmark Results" and the "AVX2 Block32 Engine" section in
+  [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)).
 
 ---
 
@@ -47,12 +54,18 @@ ternary weights (`{-1, 0, +1}`), targeting the following requirements:
 
 ## Reviewer Quick Start
 
-The two deliverables that matter for evaluation are:
+The two primary deliverables that matter for evaluation are:
 
 | Component | Purpose |
 |---|---|
 | `build/basic_engine` | Original from-scratch AVX2 ternary-sparse inference engine |
 | `build/benchmark_q2q_full_prefix_optimized` | Final, fastest engine — NHWC q8 + `AVX-VNNI` pipeline |
+
+A third engine is also built by default and included in the benchmark comparison:
+
+| Component | Purpose |
+|---|---|
+| `build/benchmark_block32_full_model_opt5` | AVX2-only (no `AVX-VNNI`) NHWC q8 panel-GEMM engine — roughly matches ORT INT8 at 1T without VNNI (see "AVX2 Block32 Engine" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)) |
 
 Recommended full reproduction path (generates artifacts, builds, runs all benchmarks, and
 writes the memory footprint report to `logs/`):
@@ -71,14 +84,17 @@ OMP_NUM_THREADS=1 ./build/benchmark_q2q_full_prefix_optimized \
 ```
 
 This prints the `C++ engine latency` block (`min_ms`/`median_ms`/`mean_ms`/`p90_ms`) —
-expect a median around **~14.8 ms at 1 thread**, vs. `basic_engine`'s ~45 ms and ORT
+expect a median around **~15.2 ms at 1 thread**, vs. `basic_engine`'s ~44.5 ms and ORT
 INT8's ~19.7 ms (see "Current Benchmark Results" for the full thread sweep, and "C++ vs
 ONNX Runtime Benchmark" for the side-by-side comparison script that produces those
-numbers for all four runtimes).
+numbers for all five runtimes).
 
 The Q2Q/VNNI path requires the `AVX-VNNI` instruction set (`vpdpbusd`/
 `_mm256_dpbusd_epi32`; available on Alder Lake and newer — see "Hardware"). On CPUs
-without it, only the AVX2 `basic_engine` path is expected to build and run correctly.
+without it, the AVX2 `basic_engine` and AVX2 block32 (`benchmark_block32_full_model_opt5`)
+paths are still expected to build and run correctly — the block32 engine reaches the same
+"roughly matches ORT INT8" result as Q2Q without requiring `AVX-VNNI` (see "AVX2 Block32
+Engine" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)).
 
 ## What to Look At
 
@@ -89,7 +105,8 @@ For evaluation, the most relevant code is:
 | `src/basic_engine/` | Original standalone AVX2 ternary-sparse engine |
 | `src/q2q_engine/` | Final, fastest engine — NHWC q8 + `AVX-VNNI` pipeline (see "Architecture Overview" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)) |
 | `src/q2q_engine/benchmark_q2q_full_prefix_optimized.cpp` | Final benchmark driver — thin orchestration over the `q2q_engine` modules |
-| `scripts/benchmark_cpp_vs_ort.py` | Main side-by-side latency comparison: `basic_engine`, Q2Q/VNNI, ORT FP32, ORT INT8 |
+| `src/nhwc_block32_engine/` | AVX2-only (no `AVX-VNNI`) NHWC q8 panel-GEMM engine — roughly matches ORT INT8 at 1T (see "AVX2 Block32 Engine" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)) |
+| `scripts/benchmark_cpp_vs_ort.py` | Main side-by-side latency comparison: `basic_engine`, Q2Q/VNNI, AVX2 block32, ORT FP32, ORT INT8 |
 | `scripts/reproduce_all.sh` | Full, ordered reproduction: artifacts → build → benchmarks → footprint report |
 | `scripts/report_memory_footprint.py` | Model/workspace memory footprint report |
 | [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md) | Kernel-level architecture, ONNX Runtime profiling findings, the investigation that motivated the Q2Q/VNNI rewrite, and the full record of what worked and didn't (with measurements) |
@@ -241,8 +258,9 @@ uv run python scripts/benchmark_cpp_vs_ort.py \
 ```
 
 which writes a CSV/JSON with one row per `(threads, runtime)` pair, where `runtime` is one
-of `cpp_engine` (`basic_engine`), `q2q_engine` (the Q2Q/VNNI engine), `ort_fp32`, or
-`ort_int8` — see "C++ vs ONNX Runtime Benchmark" for details and flags.
+of `cpp_engine` (`basic_engine`), `q2q_engine` (the Q2Q/VNNI engine), `block32_engine`
+(the AVX2 block32 opt5 engine), `ort_fp32`, or `ort_int8` — see "C++ vs ONNX Runtime
+Benchmark" for details and flags.
 
 ---
 
@@ -372,15 +390,19 @@ Useful flags:
 | `--build` | Run `cmake --build build` before benchmarking |
 | `--engine PATH` | Path to the `basic_engine` binary (default `build/basic_engine`) |
 | `--q2q-engine PATH` | Path to the optimized Q2Q/VNNI full-prefix binary (default `build/benchmark_q2q_full_prefix_optimized`) |
+| `--block32-engine PATH` | Path to the AVX2 block32 opt5 full-model binary (default `build/benchmark_block32_full_model_opt5`) |
 | `--skip-q2q` | Skip the Q2Q/VNNI engine benchmark |
+| `--skip-block32` | Skip the AVX2 block32 opt5 engine benchmark |
 | `--skip-ort-fp32` | Skip ORT FP32 baseline |
 | `--skip-ort-int8` | Skip ORT INT8 baseline |
 | `--force-quantize` | Regenerate cached ORT INT8 ONNX model |
 | `--ort-profile` | Run an ORT INT8 profiling pass and print the Chrome trace JSON path |
 
-The script benchmarks four runtimes side by side: `basic_engine`, the Q2Q/VNNI engine,
-ORT FP32, and ORT INT8 (the Q2Q/VNNI run also sweeps the same `--threads` list via its
-own `--threads` CLI flag, so its thread-scaling behavior is directly comparable).
+The script benchmarks five runtimes side by side: `basic_engine`, the Q2Q/VNNI engine,
+the AVX2 block32 (opt5) engine, ORT FP32, and ORT INT8. The Q2Q/VNNI run also sweeps the
+same `--threads` list via its own `--threads` CLI flag; the block32 engine is threaded
+purely via `OMP_NUM_THREADS` (like `basic_engine`, no CLI flag needed) — so all three
+C++ engines' thread-scaling behavior is directly comparable.
 
 Outputs are written to:
 
@@ -502,33 +524,43 @@ input = 3×224×224
 ### Current best comparison
 
 All values are **min ms / median ms** over 100 timed runs after 20 warmup runs.
-Numbers from `logs/cpp_vs_ort_20260607_155807.csv` and `logs/pytorch_fp32_20260607_155922.csv`.
+Numbers from `logs/cpp_vs_ort_20260612_025901.csv` and `logs/pytorch_fp32_20260612_030028.csv`.
 The exact numbers may vary with CPU governor, thermals, and background load; the reported table was collected from the log files listed above on the stated i7-12800HX system.
 
-| Threads | basic_engine | **Q2Q/VNNI engine** | ORT INT8 | ORT FP32 | PyTorch FP32 |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 44.8 / 45.2 | **14.6 / 14.8** | 19.5 / 19.7 | 25.7 / 25.9 | 34.7 / 35.2 |
-| 2 | 23.2 / 23.9 | **8.0 / 8.2** | 11.9 / 12.1 | 13.0 / 13.1 | 18.4 / 18.7 |
-| 4 | 13.1 / 13.5 | **4.6 / 4.7** | 7.8 / 7.9 | 7.2 / 7.4 | 10.5 / 11.1 |
-| 8 | 8.8 / 9.0 | **3.0 / 3.1** | 6.1 / 6.2 | 4.4 / 4.5 | 6.8 / 7.1 |
-| 16 | 14.5 / 18.7 | **6.9 / 7.8** | 10.1 / 10.4 | 3.9 / 4.0 | 10.9 / 11.2 |
-| 24 | 7.7 / 7.8 | **3.4 / 5.2** | 8.3 / 8.7 | 3.8 / 4.1 | 9.4 / 9.6 |
+| Threads | basic_engine | **Q2Q/VNNI engine** | AVX2 block32 (opt5) | ORT INT8 | ORT FP32 | PyTorch FP32 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 44.1 / 44.5 | **15.0 / 15.2** | 19.5 / 20.0 | 19.6 / 19.7 | 25.6 / 25.8 | 34.7 / 35.2 |
+| 2 | 23.3 / 24.0 | **8.1 / 8.4** | 10.4 / 10.6 | 11.9 / 12.0 | 12.9 / 13.1 | 18.7 / 18.9 |
+| 4 | 13.1 / 13.4 | **4.6 / 4.7** | 5.9 / 6.0 | 7.6 / 7.8 | 7.3 / 7.5 | 11.0 / 11.3 |
+| 8 | 8.6 / 8.7 | **3.1 / 3.2** | 3.8 / 4.0 | 6.1 / 6.3 | 4.3 / 4.5 | 6.9 / 7.0 |
+| 16 | 10.9 / 21.0 | **7.2 / 8.4** | 8.3 / 9.7 | 8.5 / 8.8 | 4.2 / 4.3 | 9.0 / 9.1 |
+| 24 | 7.7 / 7.8 | **3.9 / 4.3** | 6.6 / 10.5 | 8.3 / 8.6 | 3.6 / 3.9 | 7.7 / 7.8 |
 
-The **Q2Q/VNNI engine beats both `basic_engine` and ORT INT8 end-to-end at every thread
-count** — by ~3.0× over `basic_engine` and ~1.3–1.8× over ORT INT8 at 1–8 threads (its
-sweet spot; see "Architecture Overview" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)).
-It also beats ORT FP32 up to 4 threads and
+The **Q2Q/VNNI engine beats `basic_engine`, the AVX2 block32 engine, and ORT INT8
+end-to-end at every thread count** — by ~2.9× over `basic_engine` and ~1.3–2.0× over ORT
+INT8 at 1–8 threads (its sweet spot; see "Architecture Overview" in
+[ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)). It also beats ORT FP32 up to 4 threads and
 stays competitive with it through 8 threads. Only at 16+ threads does ORT FP32 (the
 fastest, most stable baseline throughout) pull ahead — the Q2Q engine's per-layer OpenMP
 parallelism has less independent work to hand out at high thread counts (e.g., layer4 is
 only 7×7 spatial), so it sees the same kind of high-thread-count variance as `basic_engine`,
 just at a much lower absolute latency.
 
+The **AVX2 block32 (opt5) engine roughly matches ORT INT8 at 1 thread** (~19.5–20.0 ms for
+both — essentially a tie within run-to-run noise) **without using any `AVX-VNNI`
+instructions**, using the same panel-im2col GEMM strategy as Q2Q but built on
+`_mm256_maddubs_epi16`/`_mm256_madd_epi16` instead of `vpdpbusd` (see "AVX2 Block32
+Engine" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)). It scales to ~3.8–4.0 ms at 8
+threads (its sweet spot, ~4.9–5.1× over 1T) but, like both other engines, degrades at
+16+ threads under this CPU's hybrid P+E-core scheduling — more sharply than Q2Q, since
+its per-thread scratch-panel overhead is relatively larger at the smaller per-row work
+units available at high thread counts.
+
 `basic_engine` itself still trails ORT INT8 at low-to-mid thread counts and ORT FP32
 throughout (see "Known Limitations" for why) — it remains a useful kernel-design study in
-its own right, and the Q2Q engine's win comes from a fundamentally different strategy
-(re-quantizing ternary weights to INT8 and using `AVX-VNNI` `vpdpbusd`), not from further
-tuning the `basic_engine` kernels.
+its own right, and both the Q2Q and block32 engines' wins come from a fundamentally
+different strategy (re-quantizing ternary weights to INT8 and running dense NHWC/q8 GEMM
+kernels), not from further tuning the `basic_engine` kernels.
 
 ### Optimization timeline
 
@@ -552,19 +584,21 @@ useful for showing progression rather than as a single controlled benchmark tabl
 
 ## Architecture, Profiling, and Optimization History
 
-The kernel-level architecture of both engines (tensor layouts, ternary execution, the q8
-and Q2Q/VNNI pipelines), the ONNX Runtime profiling that motivated the strategy change,
-the investigation that connected that profiling to the eventual rewrite, and the full
-record of what worked and what didn't — including every reverted experiment with
-measurements — now live in **[ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)**.
+The kernel-level architecture of all three engines (tensor layouts, ternary execution,
+the q8, Q2Q/VNNI, and AVX2 block32 pipelines), the ONNX Runtime profiling that motivated
+the strategy change, the investigation that connected that profiling to the eventual
+rewrite, and the full record of what worked and what didn't — including every reverted
+experiment with measurements — now live in **[ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)**.
 
 That document covers, in order:
 
 - **Architecture Overview** — tensor layout, ternary weight execution, the q8 activation
-  path, workspace execution, and the Q2Q/VNNI engine's design (NHWC q8 tensors, weight
-  panels, VNNI microkernels, fused epilogue, forward orchestration) plus *why* it
-  outperforms the sparse engine and confirmation that neither engine uses external
-  GEMM/MLAS libraries
+  path, workspace execution, the Q2Q/VNNI engine's design (NHWC q8 tensors, weight
+  panels, VNNI microkernels, fused epilogue, forward orchestration), and the **AVX2
+  Block32 Engine** (the same dense-panel-GEMM strategy built on AVX2-only `maddubs`/`madd`
+  instead of `vpdpbusd`, its opt3→opt4→opt5 progression, and its OpenMP thread-scaling
+  results) — plus *why* the panel-GEMM engines outperform the sparse engine and
+  confirmation that none of the three engines use external GEMM/MLAS libraries
 - **basic_engine Kernel Dispatch Strategy** — its runtime kernel-selection fallback chain
 - **ONNX Runtime Profiling Findings** — the profiling data that exposed *why* ORT was
   faster (packed GEMM/MLAS-style kernels, not just quantization)
@@ -727,6 +761,20 @@ string/map dispatch artifacts from downsample layer name lookups.
 │   │                                              orchestration over the modules above)
 │   └── benchmark_q2q_*.cpp             (earlier development-phase benchmarks, kept for
 │                                        history — see "Optimization timeline")
+├── src/nhwc_block32_engine/
+│   ├── nhwc_common.cpp / .hpp          (BLOCK32=32 NHWC q8 helpers, epilogue_oc4_avx2)
+│   ├── nhwc_q8_dot_avx2.hpp            (AVX2-only dot-product primitives: maddubs+madd)
+│   ├── block32_plan.cpp / .hpp         (per-layer Block32ConvPlan construction)
+│   ├── im2col_gemm.cpp / .hpp          (panel-im2col GEMM OC4 kernels, stride-1/stride-2,
+│   │                                    OpenMP-parallel over output rows)
+│   ├── block32_conv1.cpp / block32_conv1_opt.cpp / .hpp  (conv1 gather + panel-GEMM N16)
+│   ├── block32_conv_avx2.cpp / .hpp    (OC4 block32 conv, OpenMP-parallel over OC tiles)
+│   ├── block32_layer1_opt.cpp / block32_layer234_opt.cpp / .hpp  (earlier specialized
+│   │                                    layer kernels, superseded by panel-im2col in opt4/5)
+│   ├── block32_residual.cpp / .hpp     (residual add+ReLU, OpenMP-parallel over rows)
+│   ├── block32_resnet18.cpp / .hpp     (forward orchestration)
+│   └── benchmark_block32_full_model_opt5.cpp  (the final AVX2-only block32 benchmark;
+│                                        see "AVX2 Block32 Engine" in ENGINEERING_NOTES.md)
 ├── artifacts/
 │   └── generated model/input/reference files
 └── logs/
@@ -788,10 +836,10 @@ bash scripts/reproduce_all.sh
 The script auto-detects `.venv/bin/python` if present. Set `PYTHON=/path/to/python` to
 override.
 
-To reproduce just the four-way comparison table from "Current Benchmark Results"
-(`basic_engine` / Q2Q-VNNI / ORT FP32 / ORT INT8, written to
+To reproduce just the five-way comparison table from "Current Benchmark Results"
+(`basic_engine` / Q2Q-VNNI / AVX2 block32 opt5 / ORT FP32 / ORT INT8, written to
 `logs/cpp_vs_ort_<timestamp>.{json,csv}` with one row per `(threads, runtime)` pair where
-`runtime` ∈ `{cpp_engine, q2q_engine, ort_fp32, ort_int8}`):
+`runtime` ∈ `{cpp_engine, q2q_engine, block32_engine, ort_fp32, ort_int8}`):
 
 ```bash
 uv run python scripts/benchmark_cpp_vs_ort.py \
@@ -802,7 +850,8 @@ uv run python scripts/benchmark_cpp_vs_ort.py \
 ```
 
 (see "C++ vs ONNX Runtime Benchmark" for the full flag list, including
-`--skip-q2q`/`--skip-ort-fp32`/`--skip-ort-int8` if you want to narrow the comparison).
+`--skip-q2q`/`--skip-block32`/`--skip-ort-fp32`/`--skip-ort-int8` if you want to narrow
+the comparison).
 
 To reproduce just the Q2Q/VNNI engine's own thread sweep directly — no ORT/PyTorch
 involved, just the final binary printing its own `C++ engine latency` block per run (see
@@ -812,6 +861,16 @@ involved, just the final binary printing its own `C++ engine latency` block per 
 for t in 1 2 4 8 16 24; do
   OMP_NUM_THREADS="$t" ./build/benchmark_q2q_full_prefix_optimized \
     artifacts/model_ternary_i8_weights_v1.bin --threads "$t"
+done
+```
+
+Similarly, for the AVX2 block32 (opt5) engine's own thread sweep (threaded purely via
+`OMP_NUM_THREADS`, no `--threads` CLI flag):
+
+```bash
+for t in 1 2 4 8 16 24; do
+  OMP_NUM_THREADS="$t" OMP_PROC_BIND=close OMP_PLACES=cores \
+    ./build/benchmark_block32_full_model_opt5 artifacts/model_ternary_i8_weights_v1.bin
 done
 ```
 
@@ -829,8 +888,8 @@ This project satisfies the requirements as follows:
       quantization, and dot-product kernels from scratch (see "No external GEMM/MLAS
       usage" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md))
 - [x] `scripts/benchmark_cpp_vs_ort.py` benchmarks `basic_engine`, the Q2Q/VNNI engine,
-      ORT FP32, and ORT INT8 side by side across a `--threads` sweep (see "C++ vs ONNX
-      Runtime Benchmark")
+      the AVX2 block32 opt5 engine, ORT FP32, and ORT INT8 side by side across a
+      `--threads` sweep (see "C++ vs ONNX Runtime Benchmark")
 - [x] The Q2Q/VNNI benchmark also supports `--threads N` directly, so its scaling is
       independently reproducible without the comparison script (see "Reviewer Quick
       Start")
@@ -844,8 +903,8 @@ This project satisfies the requirements as follows:
 
 ## Summary
 
-This project contains two from-scratch C++ ternary ResNet-18 inference engines, built in
-sequence, embodying two different kernel strategies:
+This project contains three from-scratch C++ ternary ResNet-18 inference engines, built
+in sequence, embodying three different kernel strategies:
 
 - **`basic_engine`** started as a naive scalar ternary implementation and progressively
   added sparsity, padding, BN fusion, AVX2 vectorization, pattern grouping, q8 activation
@@ -857,24 +916,35 @@ sequence, embodying two different kernel strategies:
   the entire forward pass through a dense NHWC/q8 pipeline using `AVX-VNNI`
   (`vpdpbusd`/`_mm256_dpbusd_epi32`) dot-product microkernels (see "Architecture
 Overview" in [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)).
+- **The AVX2 block32 engine** (`src/nhwc_block32_engine/`) asks whether the Q2Q strategy's
+  win requires `AVX-VNNI` at all: it applies the same re-quantize-to-INT8,
+  dense-NHWC/q8-panel-GEMM strategy, but built entirely from `AVX2`/`FMA`
+  (`_mm256_maddubs_epi16` + `_mm256_madd_epi16`) — no VNNI instructions — and its final
+  `opt5` variant still roughly matches ORT INT8 at 1 thread (see "AVX2 Block32 Engine" in
+  [ENGINEERING_NOTES.md](ENGINEERING_NOTES.md)).
 
-Neither engine uses PyTorch, ONNX Runtime, MLAS, oneDNN, or any third-party inference
+None of the engines use PyTorch, ONNX Runtime, MLAS, oneDNN, or any third-party inference
 library. ORT and PyTorch are used only as benchmarking references.
 
 **Current performance** (i7-12800HX, 100 runs, batch=1, min/median ms — see "Current
 Benchmark Results" for the full sweep):
 
-| Threads | `basic_engine` | **Q2Q/VNNI engine** | ORT INT8 | ORT FP32 |
-|---:|---:|---:|---:|---:|
-| 1 | 44.8 / 45.2 | **14.6 / 14.8** | 19.5 / 19.7 | 25.7 / 25.9 |
-| 8 | 8.8 / 9.0 | **3.0 / 3.1** | 6.1 / 6.2 | 4.4 / 4.5 |
+| Threads | `basic_engine` | **Q2Q/VNNI engine** | AVX2 block32 (opt5) | ORT INT8 | ORT FP32 |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 44.1 / 44.5 | **15.0 / 15.2** | 19.5 / 20.0 | 19.6 / 19.7 | 25.6 / 25.8 |
+| 8 | 8.6 / 8.7 | **3.1 / 3.2** | 3.8 / 4.0 | 6.1 / 6.3 | 4.3 / 4.5 |
 
-- **The Q2Q/VNNI engine beats both `basic_engine` (~3.0×) and ORT INT8 (~1.3–1.8×)
-  end-to-end at every thread count from 1–8** — its sweet spot — and beats ORT FP32 up to
-  4 threads. Only ORT FP32 at 16+ threads pulls ahead, where its more uniform
-  intra-op parallelism handles the hybrid P+E-core scheduler better than either custom
-  engine's per-layer OpenMP split (see "Known Limitations").
-- **`basic_engine`** remains slower than ORT INT8 at 1–8T (~2× at 1T, ~1.3× at 8T) and
+- **The Q2Q/VNNI engine beats `basic_engine` (~2.9×), the AVX2 block32 engine
+  (~1.3–1.2×), and ORT INT8 (~1.3–2.0×) end-to-end at every thread count from 1–8** — its
+  sweet spot — and beats ORT FP32 up to 4 threads. Only ORT FP32 at 16+ threads pulls
+  ahead, where its more uniform intra-op parallelism handles the hybrid P+E-core
+  scheduler better than any of the three custom engines' per-layer/per-row OpenMP splits
+  (see "Known Limitations").
+- **The AVX2 block32 engine roughly ties ORT INT8 at 1T** (~19.5–20.0 ms for both) using
+  no `AVX-VNNI` — proof that the dense-panel-GEMM strategy itself, not `vpdpbusd`
+  specifically, is what closes most of the gap to ORT; `AVX-VNNI` is what then pushes Q2Q
+  decisively past ORT INT8.
+- **`basic_engine`** remains slower than ORT INT8 at 1–8T (~2.2× at 1T, ~1.3× at 8T) and
   ORT FP32 throughout — its gap is kernel arithmetic intensity, which MLAS/GEMM-style
   packing closes and which a sparse, branch-grouped ternary kernel fundamentally can't
   (see "Known Limitations" above and "What Did Not Work / Reverted Experiments" in
@@ -883,20 +953,21 @@ Benchmark Results" for the full sweep):
 The headline result is that **the Q2Q/VNNI engine is not just a kernel-design study —
 it's a from-scratch C++ engine that outperforms ONNX Runtime's INT8 path end-to-end on
 this network**, achieved by recognizing that direct ternary execution was the wrong lever
-to keep pulling and switching to a re-quantize-to-INT8 + dense-VNNI strategy instead. The
-project as a whole:
+to keep pulling and switching to a re-quantize-to-INT8 + dense-panel-GEMM strategy
+instead — and the AVX2 block32 engine shows that strategy alone (even without
+`AVX-VNNI`) already gets to within noise of ORT INT8. The project as a whole:
 
 - Demonstrates a long optimization chain from the original ~2.4-2.7 s dense scalar
   baseline (see "Optimization timeline") down to single-digit-millisecond `basic_engine`
   latency, and then — via a strategy change rather than further tuning — down to
-  ~14.8 ms (Q2Q/VNNI, 1T) and ~3.1 ms (8T): roughly **170× and 800× over the original
-  scalar baseline**, respectively.
-- Documents both engines' successful optimizations and failed hypotheses with
+  ~15.2 ms (Q2Q/VNNI, 1T) / ~3.2 ms (8T) and ~20.0 ms (AVX2 block32, 1T) / ~4.0 ms (8T):
+  roughly **170× and 800× over the original scalar baseline** for Q2Q/VNNI, respectively.
+- Documents all three engines' successful optimizations and failed hypotheses with
   measurements — including why the *first* engine's strategy hit a ceiling, and what
   changing strategy (rather than continuing to tune) bought.
-- Provides two complete, contrasting reference implementations of ternary/quantized CNN
-  inference kernels: sparse-direct (`basic_engine`) and dense-requantized-VNNI
-  (Q2Q/VNNI engine).
+- Provides three complete, contrasting reference implementations of ternary/quantized CNN
+  inference kernels: sparse-direct (`basic_engine`), dense-requantized-VNNI (Q2Q/VNNI
+  engine), and dense-requantized-AVX2-only (block32 engine).
 
 A key result of this project is that the fastest solution was *not* the most direct
 interpretation of "ternary weight network" — i.e., a kernel that exploits `{-1,0,+1}`

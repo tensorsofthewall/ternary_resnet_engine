@@ -175,6 +175,33 @@ def benchmark_q2q_engine(
     return parse_cpp_engine_stats(result.stdout)
 
 
+def benchmark_block32_engine(
+    engine_path: Path,
+    model_bin: Path,
+    threads: int,
+) -> dict[str, float]:
+    env = os.environ.copy()
+    env.update(cpp_subprocess_env_vars(threads))
+
+    # The block32 engine takes only the model path (it hardcodes
+    # artifacts/golden_input_fp32.bin) and is threaded purely via
+    # OMP_NUM_THREADS, like basic_engine.
+    cmd = [
+        str(engine_path),
+        str(model_bin),
+    ]
+
+    result = subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    return parse_cpp_engine_stats(result.stdout)
+
+
 def quantize_onnx_if_needed(
     fp32_onnx: Path,
     int8_onnx: Path,
@@ -223,6 +250,12 @@ def main() -> None:
         default=Path("build/benchmark_q2q_full_prefix_optimized"),
         help="Path to the optimized Q2Q/VNNI full-prefix benchmark binary.",
     )
+    parser.add_argument(
+        "--block32-engine",
+        type=Path,
+        default=Path("build/benchmark_block32_full_model_opt5"),
+        help="Path to the AVX2 block32 opt5 full-model benchmark binary.",
+    )
     parser.add_argument("--runs", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--calib-samples", type=int, default=32)
@@ -248,6 +281,11 @@ def main() -> None:
         "--skip-q2q",
         action="store_true",
         help="Skip the optimized Q2Q/VNNI engine benchmark.",
+    )
+    parser.add_argument(
+        "--skip-block32",
+        action="store_true",
+        help="Skip the AVX2 block32 opt5 engine benchmark.",
     )
     parser.add_argument(
         "--build",
@@ -290,6 +328,9 @@ def main() -> None:
 
     if not args.skip_q2q:
         required_paths.append(args.q2q_engine)
+
+    if not args.skip_block32:
+        required_paths.append(args.block32_engine)
 
     for path in required_paths:
         if not path.exists():
@@ -354,6 +395,22 @@ def main() -> None:
                 "threads": threads,
                 "runtime": "q2q_engine",
                 **q2q_stats,
+            })
+
+        if not args.skip_block32:
+            block32_stats = benchmark_block32_engine(
+                engine_path=args.block32_engine,
+                model_bin=model_bin,
+                threads=threads,
+            )
+
+            print_stats("C++ engine (AVX2 block32 opt5)", block32_stats)
+            print()
+
+            rows.append({
+                "threads": threads,
+                "runtime": "block32_engine",
+                **block32_stats,
             })
 
         if not args.skip_ort_fp32:

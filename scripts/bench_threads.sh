@@ -41,6 +41,10 @@ LOG_FILE="logs/thread_scaling_${TIMESTAMP}.log"
         OMP_NUM_THREADS="${t}" \
         ./build/basic_engine "$MODEL" "$INPUT"
 
+        echo "--- AVX2 block32 opt5 ---"
+        OMP_NUM_THREADS="${t}" \
+        ./build/benchmark_block32_full_model_opt5 "$MODEL"
+
         echo
     done
 } 2>&1 | tee "$LOG_FILE"

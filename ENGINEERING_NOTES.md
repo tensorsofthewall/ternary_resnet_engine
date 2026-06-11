@@ -158,6 +158,90 @@ The full module breakdown lives in `src/q2q_engine/`: `q2q_common`, `q2q_tensor`
 `basic_engine`'s module structure. This design is what lets it beat both `basic_engine`
 and ORT INT8 end-to-end (see "Current Benchmark Results" in README.md).
 
+### AVX2 Block32 Engine (opt5, AVX2-only)
+
+The AVX2 block32 engine (`src/nhwc_block32_engine/`) is a third engine that asks a
+narrower question than the Q2Q/VNNI rewrite: **does the win over ORT INT8 require
+`AVX-VNNI`, or does the dense-NHWC/q8-panel-GEMM *strategy* alone get most of the way
+there on plain `AVX2`/`FMA`?**
+
+It adopts the same high-level strategy as Q2Q — re-quantize ternary weights to INT8 once,
+run the forward pass through a quantize-once-to-q8 NHWC pipeline, and use panel-style
+weight layouts for high arithmetic intensity — but its dot-product microkernels are built
+entirely from two-instruction AVX2 sequences instead of `vpdpbusd`:
+
+```cpp
+// AVX2-only INT8 dot product (nhwc_q8_dot_avx2.hpp): the non-VNNI equivalent
+// of a single vpdpbusd. Two instructions instead of one, no AVX-512/VNNI required.
+__m256i prod16 = _mm256_maddubs_epi16(activations_u8, weights_i8); // u8*i8 -> i16, pairwise add
+acc32 = _mm256_add_epi32(acc32, _mm256_madd_epi16(prod16, ones16)); // i16 -> i32, pairwise add
+```
+
+Activations are stored in `BLOCK32`-channel NHWC q8 tensors (`q2q::QTensorNHWC`, reused
+from the Q2Q engine — `nhwc_common.hpp` adds the AVX2-only epilogue
+`epilogue_oc4_avx2`), and weights are packed into dense `OC4`-output-channel ×
+32-input-channel blocks (`Block32ConvPlan`, `block32_plan.cpp`) — directly analogous to
+Q2Q's `OC_TILE=4`/`K_CHUNK=32` panels, just consumed by the `maddubs`/`madd` pair above
+instead of `vpdpbusd`.
+
+#### Optimization progression (opt3 -> opt4 -> opt5)
+
+| Variant | Full-model median (1T) | What changed |
+|---|---:|---|
+| opt3 (Phase 14 final) | ~29.19 ms | Specialized per-layer OC4 block32 kernels (`block32_conv_avx2`, `block32_layer1_opt`/`block32_layer234_opt`), gather-based conv1 |
+| opt4 (Phase 15 final) | ~24.01 ms | Replaced the repeated 3x3/s1/p1 convs in layer2/3/4 with **panel-im2col GEMM OC4** kernels (`im2col_gemm.cpp`, `panel_im2col_gemm_oc4_n2_avx2`) — gathers each output pixel's receptive field into a panel once, then runs an OC-tile-major GEMM over it, amortizing the gather cost across all 4 output channels |
+| opt5 (Phase 16 final) | **~19.5-20.0 ms** | Extended panel-im2col GEMM to layer1's 3x3/s1/p1 convs and to the stride-2 transition convs (`panel_im2col_gemm_oc4_stride2_avx2`), and added a panel-GEMM N16 variant for conv1's 7x7/s2 stem (`conv1_panel_gemm_oc4_n16_avx2`) |
+
+Every step preserves **exact q8 correctness** (0/0 mismatches against the scalar
+reference at every stage of every variant) — these are pure kernel-strategy changes, not
+approximations.
+
+opt5's ~19.5-20.0 ms median at 1 thread lands within run-to-run noise of ORT INT8's
+~19.6-19.7 ms on this machine (see "Current Benchmark Results" in README.md) — i.e. the
+panel-GEMM strategy alone, without `AVX-VNNI`, already closes essentially the entire gap
+to ORT INT8 that `basic_engine`'s sparse-direct kernels could not. `AVX-VNNI` (Q2Q) is
+what then pushes decisively *past* ORT INT8 (~15 ms), by halving the two-instruction
+`maddubs`+`madd` sequence above into a single `vpdpbusd`.
+
+#### Multi-threading and thread scaling
+
+opt5's hot kernels are OpenMP-parallel (`#pragma omp parallel for schedule(static)`,
+following the same precedent as `q2q::q8_maxpool_3x3_s2_p1`):
+
+- `panel_im2col_gemm_oc4_avx2_impl`/`_stride2_avx2_impl` (`im2col_gemm.cpp`) — parallel
+  over output rows, with a **per-thread** `AlignedBuffer32<uint8_t> panel` scratch buffer
+  (each thread reads an overlapping, read-only band of the input and writes a disjoint
+  output row — no races)
+- `conv1_panel_gemm_oc4_avx2_impl` (`block32_conv1_opt.cpp`) — same per-thread-panel
+  pattern for the conv1 stem
+- `conv_block32_oc4_avx2` (`block32_conv_avx2.cpp`) — parallel over output-channel tiles
+  (used for downsample convs)
+- `block32_residual_add_relu_avx2` (`block32_residual.cpp`) — parallel over output rows,
+  no scratch buffers (exact analog of `q8_maxpool_3x3_s2_p1`)
+
+Threaded purely via `OMP_NUM_THREADS` (no `--threads` CLI flag), like `basic_engine`.
+Correctness is **0/0 mismatches at every thread count** (1/2/4/8/16/24 verified) — the
+per-thread scratch buffers eliminate the only potential race.
+
+Thread-scaling (`total_profiled_ms` median, 100 runs, `OMP_PROC_BIND=close
+OMP_PLACES=cores`):
+
+| Threads | median (ms) | speedup vs 1T |
+|---:|---:|---:|
+| 1  | 19.66 | 1.00x |
+| 2  | 11.16 | 1.76x |
+| 4  | 6.37  | 3.09x |
+| 8  | 4.09  | **4.81x** |
+| 16 | 13.89 | 1.42x |
+| 24 | 16.26 | 1.21x |
+
+Scaling peaks at **8 threads** (this CPU's 8 P-cores) — beyond that, threads land on
+hyperthreads/E-cores and AVX2 throughput degrades sharply, the same hybrid P+E-core
+effect documented for `basic_engine` and Q2Q in "Known Limitations" in README.md, but
+more pronounced here: block32's per-thread scratch-panel allocation and smaller per-row
+work units amortize less well once each thread's share of a row shrinks at high thread
+counts.
+
 ---
 
 ## basic_engine Kernel Dispatch Strategy
