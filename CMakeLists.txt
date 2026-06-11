@@ -744,3 +744,55 @@ target_compile_options(benchmark_q2q_full_prefix_optimized PRIVATE
 target_link_libraries(benchmark_q2q_full_prefix_optimized PRIVATE OpenMP::OpenMP_CXX)
 
 endif() # BUILD_Q2Q_FINAL (full_prefix_optimized)
+
+# ---------------------------------------------------------------------------
+# nhwc_block32_engine -- experimental AVX2-only (no AVX-VNNI) NHWC q8 engine
+# built around block32 (32-wide maddubs+madd) ternary dot products, as a
+# portable alternative to AVX-VNNI dpbusd. Targets in this group use
+# -march=x86-64-v3 (AVX2+FMA+BMI2, no AVX-512/AVX-VNNI) instead of
+# -march=native, so they stay portable to AVX2-only hosts. Does not touch
+# basic_engine or q2q_engine.
+#
+# report_block32_plan: weight-plan builder + a report tool that prints
+# per-layer block-sparsity statistics (all-zero 32-wide blocks).
+# ---------------------------------------------------------------------------
+option(BUILD_NHWC_BLOCK32 "Build the experimental AVX2-only NHWC block32 ternary q8 engine" ON)
+
+if(BUILD_NHWC_BLOCK32)
+
+add_executable(report_block32_plan
+    src/nhwc_block32_engine/report_block32_plan.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(report_block32_plan PRIVATE src/basic_engine src/nhwc_block32_engine)
+target_compile_definitions(report_block32_plan PRIVATE NDEBUG)
+target_compile_options(report_block32_plan PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Portable AVX2 (maddubs+madd, no VNNI) dot-kernel microkernel benchmark for
+# layer2.1.conv2 (scalar reference, OC1, and OC4 variants).
+add_executable(benchmark_nhwc_block32_conv
+    src/nhwc_block32_engine/benchmark_nhwc_block32_conv.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_nhwc_block32_conv PRIVATE src/basic_engine src/nhwc_block32_engine)
+target_compile_definitions(benchmark_nhwc_block32_conv PRIVATE NDEBUG)
+target_compile_options(benchmark_nhwc_block32_conv PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+endif() # BUILD_NHWC_BLOCK32
