@@ -80,4 +80,20 @@ Block32ConvPlan build_block32_plan(const Conv2DParams& conv) {
     return plan;
 }
 
+void require_uniform_block_layout(const Block32ConvPlan& plan) {
+    const auto& blocks0 = plan.oc_plans.front().blocks;
+    for (const OCPlan& oc_plan : plan.oc_plans) {
+        if (oc_plan.blocks.size() != blocks0.size()) {
+            throw std::runtime_error("require_uniform_block_layout: block-count mismatch across output channels: " + plan.name);
+        }
+        for (size_t i = 0; i < blocks0.size(); ++i) {
+            const Block32& a = blocks0[i];
+            const Block32& b = oc_plan.blocks[i];
+            if (a.ky != b.ky || a.kx != b.kx || a.ic_block != b.ic_block) {
+                throw std::runtime_error("require_uniform_block_layout: (ky,kx,ic_block) sequence mismatch across output channels: " + plan.name);
+            }
+        }
+    }
+}
+
 } // namespace nhwc_block32

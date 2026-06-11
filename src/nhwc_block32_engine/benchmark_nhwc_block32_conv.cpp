@@ -171,28 +171,6 @@ void conv3x3_s1_block32_oc4_avx2(
     }
 }
 
-// The OC4 kernel above walks four oc_plans in lockstep using only b0[i]'s
-// (ky,kx,ic_block) coordinates. This holds as long as every output channel's
-// block list has the same length and (ky,kx,ic_block) sequence -- true here
-// because build_block32_plan iterates all (ky,kx,ic_block) combos in
-// a fixed order and (for this ternary model) never drops one as all-zero
-// (see block32_plan.hpp). Throws if that assumption doesn't hold.
-void require_uniform_block_layout(const Block32ConvPlan& plan) {
-    const auto& blocks0 = plan.oc_plans.front().blocks;
-    for (const OCPlan& oc_plan : plan.oc_plans) {
-        if (oc_plan.blocks.size() != blocks0.size()) {
-            throw std::runtime_error("require_uniform_block_layout: block-count mismatch across output channels");
-        }
-        for (size_t i = 0; i < blocks0.size(); ++i) {
-            const Block32& a = blocks0[i];
-            const Block32& b = oc_plan.blocks[i];
-            if (a.ky != b.ky || a.kx != b.kx || a.ic_block != b.ic_block) {
-                throw std::runtime_error("require_uniform_block_layout: (ky,kx,ic_block) sequence mismatch across output channels");
-            }
-        }
-    }
-}
-
 } // namespace
 
 int main(int argc, char** argv) {

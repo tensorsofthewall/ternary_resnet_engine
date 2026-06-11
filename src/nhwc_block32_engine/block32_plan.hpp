@@ -62,4 +62,13 @@ bool can_use_block32_plan(const Conv2DParams& conv);
 // the declared shape, or if any weight value is outside {-1,0,+1}.
 Block32ConvPlan build_block32_plan(const Conv2DParams& conv);
 
+// Throws unless every output channel's block list has the same length and
+// (ky,kx,ic_block) sequence as oc_plans[0]. OC4 (and wider) kernels walk the
+// blocks of several output channels in lockstep using only one channel's
+// (ky,kx,ic_block) coordinates, which is only valid under this invariant --
+// true in practice because build_block32_plan iterates all (ky,kx,ic_block)
+// combos in a fixed order and never drops one as all-zero for ternary
+// weights at width 32 (see Block32 above).
+void require_uniform_block_layout(const Block32ConvPlan& plan);
+
 } // namespace nhwc_block32

@@ -795,4 +795,28 @@ target_compile_definitions(benchmark_nhwc_block32_conv PRIVATE NDEBUG)
 target_compile_options(benchmark_nhwc_block32_conv PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
 
+# Combined layer2+3+4 residual stack using the generic AVX2 OC4 block32 conv
+# kernel (conv_block32_oc4_avx2) for every conv (3x3 s1/s2 pad1, 1x1 s2 pad0)
+# and a local single-threaded AVX2 residual-add+ReLU kernel. Reuses
+# q2q::QTensorNHWC for the q8 NHWC tensor type.
+add_executable(benchmark_block32_layer234_stack
+    src/nhwc_block32_engine/benchmark_block32_layer234_stack.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_layer234_stack PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_layer234_stack PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_layer234_stack PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
 endif() # BUILD_NHWC_BLOCK32
