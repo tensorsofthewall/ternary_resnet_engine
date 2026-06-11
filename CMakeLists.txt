@@ -818,6 +818,7 @@ target_include_directories(benchmark_block32_layer234_stack PRIVATE src/basic_en
 target_compile_definitions(benchmark_block32_layer234_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_layer234_stack PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_layer234_stack PRIVATE OpenMP::OpenMP_CXX)
 
 # Full-model forward pass: FP32 NCHW input -> q8 quantize -> conv1 (gather-based
 # AVX2 block32 kernel) -> maxpool -> layer1-4 (AVX2 OC4 block32) -> dequant ->
@@ -849,6 +850,7 @@ target_include_directories(benchmark_block32_full_model PRIVATE src/basic_engine
 target_compile_definitions(benchmark_block32_full_model PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_full_model PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_full_model PRIVATE OpenMP::OpenMP_CXX)
 
 # Phase 16 Step 1: panel-im2col GEMM vs current N4 kernel for layer1 (64x64, 56x56).
 add_executable(benchmark_block32_im2col_layer1
@@ -880,6 +882,7 @@ target_include_directories(benchmark_block32_im2col_layer1 PRIVATE src/basic_eng
 target_compile_definitions(benchmark_block32_im2col_layer1 PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_im2col_layer1 PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_im2col_layer1 PRIVATE OpenMP::OpenMP_CXX)
 
 # Experimental im2col/GEMM-style AVX2 OC4 framework, benchmarked against the
 # specialized layer2 conv3x3s1p1_128x128_28x28_oc4_n2_avx2 kernel. Benchmark-
@@ -913,6 +916,7 @@ target_include_directories(benchmark_block32_im2col_layer2 PRIVATE src/basic_eng
 target_compile_definitions(benchmark_block32_im2col_layer2 PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_im2col_layer2 PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_im2col_layer2 PRIVATE OpenMP::OpenMP_CXX)
 
 # Phase 15 Step 3: panel-im2col GEMM vs specialized layer3 (256x256, 14x14).
 add_executable(benchmark_block32_im2col_layer3
@@ -944,6 +948,7 @@ target_include_directories(benchmark_block32_im2col_layer3 PRIVATE src/basic_eng
 target_compile_definitions(benchmark_block32_im2col_layer3 PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_im2col_layer3 PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_im2col_layer3 PRIVATE OpenMP::OpenMP_CXX)
 
 # Phase 15 Step 4: panel-im2col GEMM vs specialized layer4 (512x512, 7x7).
 add_executable(benchmark_block32_im2col_layer4
@@ -975,6 +980,7 @@ target_include_directories(benchmark_block32_im2col_layer4 PRIVATE src/basic_eng
 target_compile_definitions(benchmark_block32_im2col_layer4 PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_im2col_layer4 PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_im2col_layer4 PRIVATE OpenMP::OpenMP_CXX)
 
 # Phase 15 Step 2/5: full model with panel-im2col GEMM (panel_im2col_gemm_oc4_n2_avx2)
 # replacing the repeated 3x3/s1/p1 convs in layer2/3/4, on top of opt3.
@@ -1007,6 +1013,7 @@ target_include_directories(benchmark_block32_full_model_opt4 PRIVATE src/basic_e
 target_compile_definitions(benchmark_block32_full_model_opt4 PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_full_model_opt4 PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_full_model_opt4 PRIVATE OpenMP::OpenMP_CXX)
 
 # Phase 16 Step 5: full model integrating layer1 panel-im2col (Step 1),
 # conv1 panel-GEMM N16 (Step 2), and layer2/3/4 transition-conv
@@ -1042,5 +1049,6 @@ target_include_directories(benchmark_block32_full_model_opt5 PRIVATE src/basic_e
 target_compile_definitions(benchmark_block32_full_model_opt5 PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_full_model_opt5 PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+target_link_libraries(benchmark_block32_full_model_opt5 PRIVATE OpenMP::OpenMP_CXX)
 
 endif() # BUILD_NHWC_BLOCK32

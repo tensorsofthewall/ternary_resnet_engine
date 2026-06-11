@@ -3,6 +3,7 @@
 #include "nhwc_common.hpp"
 
 #include <immintrin.h>
+#include <omp.h>
 
 namespace nhwc_block32 {
 
@@ -47,6 +48,10 @@ void block32_residual_add_relu_avx2(
     const uint8_t* bbase = b.data.data();
     uint8_t* ybase = y.data.data();
 
+    // Parallelize over output rows -- each row reads disjoint, non-
+    // overlapping rows of `a`/`b` and writes a disjoint row of `y`, so
+    // there are no races.
+    #pragma omp parallel for schedule(static)
     for (int h = 0; h < H; ++h) {
         for (int w = 0; w < W; ++w) {
             const uint8_t* ap = abase + ((static_cast<size_t>(h + a.border) * a.W + static_cast<size_t>(a.border)) * C) + static_cast<size_t>(w) * C;

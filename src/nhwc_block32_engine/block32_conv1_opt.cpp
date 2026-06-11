@@ -3,6 +3,7 @@
 #include "nhwc_q8_dot_avx2.hpp"
 
 #include <immintrin.h>
+#include <omp.h>
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -242,6 +243,11 @@ void conv1_panel_gemm_oc4_avx2_impl(
     const float inv_out_scale = 1.0f / out.scale;
     const __m256i ones16 = _mm256_set1_epi16(1);
 
+    // Parallelize over output rows -- same race-free reasoning as the
+    // panel-im2col kernels above (overlapping reads from `in`, disjoint
+    // writes to `out`, per-thread `panel` scratch).
+    #pragma omp parallel
+    {
     AlignedBuffer32<uint8_t> panel(static_cast<size_t>(N_TILE) * static_cast<size_t>(B.K_pad));
 
     auto process_tile = [&](int oh, int ow0, int tile_width) {
@@ -296,11 +302,13 @@ void conv1_panel_gemm_oc4_avx2_impl(
         }
     };
 
+    #pragma omp for schedule(static)
     for (int oh = 0; oh < OH; ++oh) {
         int ow0 = 0;
         for (; ow0 + N_TILE <= OW; ow0 += N_TILE) process_tile(oh, ow0, N_TILE);
         for (; ow0 < OW; ++ow0) process_tile(oh, ow0, 1);
     }
+    } // omp parallel
 }
 
 } // namespace

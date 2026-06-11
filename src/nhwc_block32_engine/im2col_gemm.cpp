@@ -3,6 +3,7 @@
 #include "nhwc_common.hpp"
 
 #include <immintrin.h>
+#include <omp.h>
 #include <cstring>
 #include <stdexcept>
 
@@ -148,70 +149,78 @@ void panel_im2col_gemm_oc4_avx2_impl(
     const float in_scale = in.scale;
     const float inv_out_scale = 1.0f / out.scale;
 
-    AlignedBuffer32<uint8_t> panel(static_cast<size_t>(N_TILE) * static_cast<size_t>(B.K_pad));
+    // Parallelize over output rows -- each row reads an overlapping
+    // (read-only, safe) band of `in` and writes a disjoint output row, so
+    // there are no races. `panel` is per-thread scratch, allocated once per
+    // thread outside the `omp for`.
+    #pragma omp parallel
+    {
+        AlignedBuffer32<uint8_t> panel(static_cast<size_t>(N_TILE) * static_cast<size_t>(B.K_pad));
 
-    auto process_tile = [&](int oh, int ow0, int tile_width) {
-        // Build A_panel[tile_width][K_pad] for output columns [ow0, ow0+tile_width).
-        for (int ky = 0; ky < 3; ++ky) {
-            const int ih = oh + ky + read_offset;
-            for (int kx = 0; kx < 3; ++kx) {
-                for (int icb = 0; icb < ic_blocks; ++icb) {
-                    const int kidx = ky * 3 * ic_blocks + kx * ic_blocks + icb;
-                    for (int p = 0; p < tile_width; ++p) {
-                        const int iw = ow0 + p + kx + read_offset;
-                        const size_t src_off = (static_cast<size_t>(ih) * static_cast<size_t>(in.W) + static_cast<size_t>(iw)) * static_cast<size_t>(C)
-                            + static_cast<size_t>(icb) * BLOCK32;
-                        uint8_t* dst = panel.data() + (static_cast<size_t>(p) * static_cast<size_t>(B.K_pad)) + static_cast<size_t>(kidx) * 32;
-                        std::memcpy(dst, &in.data[src_off], 32);
+        auto process_tile = [&](int oh, int ow0, int tile_width) {
+            // Build A_panel[tile_width][K_pad] for output columns [ow0, ow0+tile_width).
+            for (int ky = 0; ky < 3; ++ky) {
+                const int ih = oh + ky + read_offset;
+                for (int kx = 0; kx < 3; ++kx) {
+                    for (int icb = 0; icb < ic_blocks; ++icb) {
+                        const int kidx = ky * 3 * ic_blocks + kx * ic_blocks + icb;
+                        for (int p = 0; p < tile_width; ++p) {
+                            const int iw = ow0 + p + kx + read_offset;
+                            const size_t src_off = (static_cast<size_t>(ih) * static_cast<size_t>(in.W) + static_cast<size_t>(iw)) * static_cast<size_t>(C)
+                                + static_cast<size_t>(icb) * BLOCK32;
+                            uint8_t* dst = panel.data() + (static_cast<size_t>(p) * static_cast<size_t>(B.K_pad)) + static_cast<size_t>(kidx) * 32;
+                            std::memcpy(dst, &in.data[src_off], 32);
+                        }
                     }
                 }
             }
-        }
 
-        uint8_t* out_row = out.data.data()
-            + ((static_cast<size_t>(oh + out.border) * static_cast<size_t>(out.W) + static_cast<size_t>(ow0 + out.border)) * static_cast<size_t>(out.C));
+            uint8_t* out_row = out.data.data()
+                + ((static_cast<size_t>(oh + out.border) * static_cast<size_t>(out.W) + static_cast<size_t>(ow0 + out.border)) * static_cast<size_t>(out.C));
 
-        for (int t = 0; t < n_oc_tiles; ++t) {
-            float s[4], bb[4];
-            for (int k = 0; k < 4; ++k) {
-                s[k] = bn.scale[static_cast<size_t>(t * 4 + k)] * in_scale;
-                bb[k] = bn.bias[static_cast<size_t>(t * 4 + k)];
-            }
-
-            __m256i acc[4][N_TILE];
-            for (int lane = 0; lane < 4; ++lane) {
-                for (int p = 0; p < tile_width; ++p) acc[lane][p] = _mm256_setzero_si256();
-            }
-
-            for (int kb = 0; kb < k_blocks; ++kb) {
-                __m256i va[N_TILE];
-                for (int p = 0; p < tile_width; ++p) {
-                    va[p] = _mm256_load_si256(reinterpret_cast<const __m256i*>(panel.data() + static_cast<size_t>(p) * static_cast<size_t>(B.K_pad) + kb * 32));
+            for (int t = 0; t < n_oc_tiles; ++t) {
+                float s[4], bb[4];
+                for (int k = 0; k < 4; ++k) {
+                    s[k] = bn.scale[static_cast<size_t>(t * 4 + k)] * in_scale;
+                    bb[k] = bn.bias[static_cast<size_t>(t * 4 + k)];
                 }
+
+                __m256i acc[4][N_TILE];
                 for (int lane = 0; lane < 4; ++lane) {
-                    const __m256i vw = _mm256_load_si256(reinterpret_cast<const __m256i*>(B.block(t, kb, lane)));
+                    for (int p = 0; p < tile_width; ++p) acc[lane][p] = _mm256_setzero_si256();
+                }
+
+                for (int kb = 0; kb < k_blocks; ++kb) {
+                    __m256i va[N_TILE];
                     for (int p = 0; p < tile_width; ++p) {
-                        acc[lane][p] = _mm256_add_epi32(acc[lane][p], dot_u8_i8_32_both_preloaded_avx2(va[p], vw));
+                        va[p] = _mm256_load_si256(reinterpret_cast<const __m256i*>(panel.data() + static_cast<size_t>(p) * static_cast<size_t>(B.K_pad) + kb * 32));
+                    }
+                    for (int lane = 0; lane < 4; ++lane) {
+                        const __m256i vw = _mm256_load_si256(reinterpret_cast<const __m256i*>(B.block(t, kb, lane)));
+                        for (int p = 0; p < tile_width; ++p) {
+                            acc[lane][p] = _mm256_add_epi32(acc[lane][p], dot_u8_i8_32_both_preloaded_avx2(va[p], vw));
+                        }
                     }
                 }
-            }
 
-            for (int p = 0; p < tile_width; ++p) {
-                int32_t d[4];
-                for (int lane = 0; lane < 4; ++lane) d[lane] = hsum_epi32(acc[lane][p]);
-                uint8_t* out_px = out_row + static_cast<size_t>(p) * static_cast<size_t>(out.C) + static_cast<size_t>(t * 4);
-                epilogue_oc4_avx2(d, s, bb, relu, inv_out_scale, out_px);
+                for (int p = 0; p < tile_width; ++p) {
+                    int32_t d[4];
+                    for (int lane = 0; lane < 4; ++lane) d[lane] = hsum_epi32(acc[lane][p]);
+                    uint8_t* out_px = out_row + static_cast<size_t>(p) * static_cast<size_t>(out.C) + static_cast<size_t>(t * 4);
+                    epilogue_oc4_avx2(d, s, bb, relu, inv_out_scale, out_px);
+                }
             }
-        }
-    };
+        };
 
-    for (int oh = 0; oh < OH; ++oh) {
-        int ow0 = 0;
-        for (; ow0 + N_TILE <= OW; ow0 += N_TILE) {
-            process_tile(oh, ow0, N_TILE);
-        }
-        for (; ow0 < OW; ++ow0) {
-            process_tile(oh, ow0, 1);
+        #pragma omp for schedule(static)
+        for (int oh = 0; oh < OH; ++oh) {
+            int ow0 = 0;
+            for (; ow0 + N_TILE <= OW; ow0 += N_TILE) {
+                process_tile(oh, ow0, N_TILE);
+            }
+            for (; ow0 < OW; ++ow0) {
+                process_tile(oh, ow0, 1);
+            }
         }
     }
 }
@@ -235,70 +244,77 @@ void panel_im2col_gemm_oc4_stride2_avx2_impl(
     const float in_scale = in.scale;
     const float inv_out_scale = 1.0f / out.scale;
 
-    AlignedBuffer32<uint8_t> panel(static_cast<size_t>(N_TILE) * static_cast<size_t>(B.K_pad));
+    // Parallelize over output rows -- same race-free reasoning as the
+    // stride-1 kernel above (overlapping reads from `in`, disjoint writes
+    // to `out`, per-thread `panel` scratch).
+    #pragma omp parallel
+    {
+        AlignedBuffer32<uint8_t> panel(static_cast<size_t>(N_TILE) * static_cast<size_t>(B.K_pad));
 
-    auto process_tile = [&](int oh, int ow0, int tile_width) {
-        // Build A_panel[tile_width][K_pad] for output columns [ow0, ow0+tile_width).
-        for (int ky = 0; ky < 3; ++ky) {
-            const int ih = oh * 2 + ky + read_offset;
-            for (int kx = 0; kx < 3; ++kx) {
-                for (int icb = 0; icb < ic_blocks; ++icb) {
-                    const int kidx = ky * 3 * ic_blocks + kx * ic_blocks + icb;
-                    for (int p = 0; p < tile_width; ++p) {
-                        const int iw = (ow0 + p) * 2 + kx + read_offset;
-                        const size_t src_off = (static_cast<size_t>(ih) * static_cast<size_t>(in.W) + static_cast<size_t>(iw)) * static_cast<size_t>(C)
-                            + static_cast<size_t>(icb) * BLOCK32;
-                        uint8_t* dst = panel.data() + (static_cast<size_t>(p) * static_cast<size_t>(B.K_pad)) + static_cast<size_t>(kidx) * 32;
-                        std::memcpy(dst, &in.data[src_off], 32);
+        auto process_tile = [&](int oh, int ow0, int tile_width) {
+            // Build A_panel[tile_width][K_pad] for output columns [ow0, ow0+tile_width).
+            for (int ky = 0; ky < 3; ++ky) {
+                const int ih = oh * 2 + ky + read_offset;
+                for (int kx = 0; kx < 3; ++kx) {
+                    for (int icb = 0; icb < ic_blocks; ++icb) {
+                        const int kidx = ky * 3 * ic_blocks + kx * ic_blocks + icb;
+                        for (int p = 0; p < tile_width; ++p) {
+                            const int iw = (ow0 + p) * 2 + kx + read_offset;
+                            const size_t src_off = (static_cast<size_t>(ih) * static_cast<size_t>(in.W) + static_cast<size_t>(iw)) * static_cast<size_t>(C)
+                                + static_cast<size_t>(icb) * BLOCK32;
+                            uint8_t* dst = panel.data() + (static_cast<size_t>(p) * static_cast<size_t>(B.K_pad)) + static_cast<size_t>(kidx) * 32;
+                            std::memcpy(dst, &in.data[src_off], 32);
+                        }
                     }
                 }
             }
-        }
 
-        uint8_t* out_row = out.data.data()
-            + ((static_cast<size_t>(oh + out.border) * static_cast<size_t>(out.W) + static_cast<size_t>(ow0 + out.border)) * static_cast<size_t>(out.C));
+            uint8_t* out_row = out.data.data()
+                + ((static_cast<size_t>(oh + out.border) * static_cast<size_t>(out.W) + static_cast<size_t>(ow0 + out.border)) * static_cast<size_t>(out.C));
 
-        for (int t = 0; t < n_oc_tiles; ++t) {
-            float s[4], bb[4];
-            for (int k = 0; k < 4; ++k) {
-                s[k] = bn.scale[static_cast<size_t>(t * 4 + k)] * in_scale;
-                bb[k] = bn.bias[static_cast<size_t>(t * 4 + k)];
-            }
-
-            __m256i acc[4][N_TILE];
-            for (int lane = 0; lane < 4; ++lane) {
-                for (int p = 0; p < tile_width; ++p) acc[lane][p] = _mm256_setzero_si256();
-            }
-
-            for (int kb = 0; kb < k_blocks; ++kb) {
-                __m256i va[N_TILE];
-                for (int p = 0; p < tile_width; ++p) {
-                    va[p] = _mm256_load_si256(reinterpret_cast<const __m256i*>(panel.data() + static_cast<size_t>(p) * static_cast<size_t>(B.K_pad) + kb * 32));
+            for (int t = 0; t < n_oc_tiles; ++t) {
+                float s[4], bb[4];
+                for (int k = 0; k < 4; ++k) {
+                    s[k] = bn.scale[static_cast<size_t>(t * 4 + k)] * in_scale;
+                    bb[k] = bn.bias[static_cast<size_t>(t * 4 + k)];
                 }
+
+                __m256i acc[4][N_TILE];
                 for (int lane = 0; lane < 4; ++lane) {
-                    const __m256i vw = _mm256_load_si256(reinterpret_cast<const __m256i*>(B.block(t, kb, lane)));
+                    for (int p = 0; p < tile_width; ++p) acc[lane][p] = _mm256_setzero_si256();
+                }
+
+                for (int kb = 0; kb < k_blocks; ++kb) {
+                    __m256i va[N_TILE];
                     for (int p = 0; p < tile_width; ++p) {
-                        acc[lane][p] = _mm256_add_epi32(acc[lane][p], dot_u8_i8_32_both_preloaded_avx2(va[p], vw));
+                        va[p] = _mm256_load_si256(reinterpret_cast<const __m256i*>(panel.data() + static_cast<size_t>(p) * static_cast<size_t>(B.K_pad) + kb * 32));
+                    }
+                    for (int lane = 0; lane < 4; ++lane) {
+                        const __m256i vw = _mm256_load_si256(reinterpret_cast<const __m256i*>(B.block(t, kb, lane)));
+                        for (int p = 0; p < tile_width; ++p) {
+                            acc[lane][p] = _mm256_add_epi32(acc[lane][p], dot_u8_i8_32_both_preloaded_avx2(va[p], vw));
+                        }
                     }
                 }
-            }
 
-            for (int p = 0; p < tile_width; ++p) {
-                int32_t d[4];
-                for (int lane = 0; lane < 4; ++lane) d[lane] = hsum_epi32(acc[lane][p]);
-                uint8_t* out_px = out_row + static_cast<size_t>(p) * static_cast<size_t>(out.C) + static_cast<size_t>(t * 4);
-                epilogue_oc4_avx2(d, s, bb, relu, inv_out_scale, out_px);
+                for (int p = 0; p < tile_width; ++p) {
+                    int32_t d[4];
+                    for (int lane = 0; lane < 4; ++lane) d[lane] = hsum_epi32(acc[lane][p]);
+                    uint8_t* out_px = out_row + static_cast<size_t>(p) * static_cast<size_t>(out.C) + static_cast<size_t>(t * 4);
+                    epilogue_oc4_avx2(d, s, bb, relu, inv_out_scale, out_px);
+                }
             }
-        }
-    };
+        };
 
-    for (int oh = 0; oh < OH; ++oh) {
-        int ow0 = 0;
-        for (; ow0 + N_TILE <= OW; ow0 += N_TILE) {
-            process_tile(oh, ow0, N_TILE);
-        }
-        for (; ow0 < OW; ++ow0) {
-            process_tile(oh, ow0, 1);
+        #pragma omp for schedule(static)
+        for (int oh = 0; oh < OH; ++oh) {
+            int ow0 = 0;
+            for (; ow0 + N_TILE <= OW; ow0 += N_TILE) {
+                process_tile(oh, ow0, N_TILE);
+            }
+            for (; ow0 < OW; ++ow0) {
+                process_tile(oh, ow0, 1);
+            }
         }
     }
 }

@@ -4,6 +4,7 @@
 #include "nhwc_q8_dot_avx2.hpp"
 
 #include <immintrin.h>
+#include <omp.h>
 #include <algorithm>
 
 namespace nhwc_block32 {
@@ -21,6 +22,11 @@ void conv_block32_oc4_avx2(
     const float dq = in.scale;
     const float inv_out_scale = 1.0f / out.scale;
 
+    // Parallelize over output-channel tiles -- each iteration only reads
+    // `in`/weights and writes a disjoint set of output channels, so there
+    // are no races. All per-iteration locals are declared inside the loop
+    // body and are therefore naturally thread-private.
+    #pragma omp parallel for schedule(static)
     for (int oc0 = 0; oc0 < OC; oc0 += 4) {
         const auto& b0 = plan.oc_plans[static_cast<size_t>(oc0 + 0)].blocks;
         const auto& b1 = plan.oc_plans[static_cast<size_t>(oc0 + 1)].blocks;
