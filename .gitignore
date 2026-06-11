@@ -3,6 +3,14 @@ artifacts/
 
 # C++ build
 build/
+build-*/
+
+# Profiling / logging output
+logs/
+perf.data
+perf.data.*
+onnxruntime_profile__*.json
+*.pdf
 
 # Python
 .venv/

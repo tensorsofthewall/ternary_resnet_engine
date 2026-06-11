@@ -31,6 +31,29 @@ static inline int32_t dot_u8_i8_32_avx2(const uint8_t* a, const int8_t* w) {
     return hsum_epi32(dot_u8_i8_32_partial_avx2(a, w));
 }
 
+// 32-wide uint8 activation . int8 ternary {-1,0,+1} weight dot product,
+// without the final horizontal sum, taking the activation block as an
+// already-loaded __m256i (avoids reloading `a` from memory when the same
+// activation block is dotted against many weight blocks in a row).
+static inline __m256i dot_u8_i8_32_partial_preloaded_avx2(__m256i va, const int8_t* w) {
+    const __m256i vw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(w));
+    const __m256i prod16 = _mm256_maddubs_epi16(va, vw);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+    return _mm256_madd_epi16(prod16, ones16);
+}
+
+// 32-wide uint8 activation . int8 ternary {-1,0,+1} weight dot product,
+// without the final horizontal sum, taking the weight block as an
+// already-loaded __m256i (avoids reloading `w` from memory when the same
+// weight block is dotted against several activation blocks, e.g. adjacent
+// output pixels sharing a kernel tap).
+static inline __m256i dot_u8_i8_32_partial_w_preloaded_avx2(const uint8_t* a, __m256i vw) {
+    const __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
+    const __m256i prod16 = _mm256_maddubs_epi16(va, vw);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+    return _mm256_madd_epi16(prod16, ones16);
+}
+
 // Computes four 32-wide dot products of the same activation block `a`
 // against four different ternary weight blocks (one per output channel),
 // amortizing the activation load across all four.

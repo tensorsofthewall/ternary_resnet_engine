@@ -65,11 +65,7 @@ void conv_block32_oc4_avx2(
                 };
 
                 uint8_t* out_px = out_row + static_cast<size_t>(ow) * static_cast<size_t>(out.C);
-                for (int k = 0; k < 4; ++k) {
-                    float v = static_cast<float>(d[k]) * s[k] + bb[k];
-                    if (relu) v = std::max(v, 0.0f);
-                    out_px[k] = requantize_u8(v, inv_out_scale);
-                }
+                epilogue_oc4_avx2(d, s, bb, relu, inv_out_scale, out_px);
             }
         }
     }

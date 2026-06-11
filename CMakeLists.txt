@@ -819,4 +819,228 @@ target_compile_definitions(benchmark_block32_layer234_stack PRIVATE NDEBUG)
 target_compile_options(benchmark_block32_layer234_stack PRIVATE
     -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
 
+# Full-model forward pass: FP32 NCHW input -> q8 quantize -> conv1 (gather-based
+# AVX2 block32 kernel) -> maxpool -> layer1-4 (AVX2 OC4 block32) -> dequant ->
+# avgpool+fc, all AVX2-only (no AVX-VNNI). Reuses q2q's quantize/dequant/maxpool
+# kernels and basic_engine's avgpool/fc ops (header-only deps, no VNNI/AVX-512
+# kernels linked in).
+add_executable(benchmark_block32_full_model
+    src/nhwc_block32_engine/benchmark_block32_full_model.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_full_model PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_full_model PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_full_model PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Phase 16 Step 1: panel-im2col GEMM vs current N4 kernel for layer1 (64x64, 56x56).
+add_executable(benchmark_block32_im2col_layer1
+    src/nhwc_block32_engine/benchmark_block32_im2col_layer1.cpp
+    src/nhwc_block32_engine/im2col_gemm.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_conv1_opt.cpp
+    src/nhwc_block32_engine/block32_layer1_opt.cpp
+    src/nhwc_block32_engine/block32_layer234_opt.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_im2col_layer1 PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_im2col_layer1 PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_im2col_layer1 PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Experimental im2col/GEMM-style AVX2 OC4 framework, benchmarked against the
+# specialized layer2 conv3x3s1p1_128x128_28x28_oc4_n2_avx2 kernel. Benchmark-
+# only -- not wired into any production forward pass.
+add_executable(benchmark_block32_im2col_layer2
+    src/nhwc_block32_engine/benchmark_block32_im2col_layer2.cpp
+    src/nhwc_block32_engine/im2col_gemm.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_conv1_opt.cpp
+    src/nhwc_block32_engine/block32_layer1_opt.cpp
+    src/nhwc_block32_engine/block32_layer234_opt.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_im2col_layer2 PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_im2col_layer2 PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_im2col_layer2 PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Phase 15 Step 3: panel-im2col GEMM vs specialized layer3 (256x256, 14x14).
+add_executable(benchmark_block32_im2col_layer3
+    src/nhwc_block32_engine/benchmark_block32_im2col_layer3.cpp
+    src/nhwc_block32_engine/im2col_gemm.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_conv1_opt.cpp
+    src/nhwc_block32_engine/block32_layer1_opt.cpp
+    src/nhwc_block32_engine/block32_layer234_opt.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_im2col_layer3 PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_im2col_layer3 PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_im2col_layer3 PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Phase 15 Step 4: panel-im2col GEMM vs specialized layer4 (512x512, 7x7).
+add_executable(benchmark_block32_im2col_layer4
+    src/nhwc_block32_engine/benchmark_block32_im2col_layer4.cpp
+    src/nhwc_block32_engine/im2col_gemm.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_conv1_opt.cpp
+    src/nhwc_block32_engine/block32_layer1_opt.cpp
+    src/nhwc_block32_engine/block32_layer234_opt.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_im2col_layer4 PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_im2col_layer4 PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_im2col_layer4 PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Phase 15 Step 2/5: full model with panel-im2col GEMM (panel_im2col_gemm_oc4_n2_avx2)
+# replacing the repeated 3x3/s1/p1 convs in layer2/3/4, on top of opt3.
+add_executable(benchmark_block32_full_model_opt4
+    src/nhwc_block32_engine/benchmark_block32_full_model_opt4.cpp
+    src/nhwc_block32_engine/im2col_gemm.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_conv1_opt.cpp
+    src/nhwc_block32_engine/block32_layer1_opt.cpp
+    src/nhwc_block32_engine/block32_layer234_opt.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_full_model_opt4 PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_full_model_opt4 PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_full_model_opt4 PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
+# Phase 16 Step 5: full model integrating layer1 panel-im2col (Step 1),
+# conv1 panel-GEMM N16 (Step 2), and layer2/3/4 transition-conv
+# panel-im2col stride2 (Step 3) on top of opt4. This is the final SOTA
+# single-thread AVX2-only (no AVX-VNNI) result: ~19.36ms, beating the
+# ORT INT8 single-thread target of ~20ms.
+add_executable(benchmark_block32_full_model_opt5
+    src/nhwc_block32_engine/benchmark_block32_full_model_opt5.cpp
+    src/nhwc_block32_engine/im2col_gemm.cpp
+    src/nhwc_block32_engine/block32_plan.cpp
+    src/nhwc_block32_engine/block32_conv_avx2.cpp
+    src/nhwc_block32_engine/block32_conv1.cpp
+    src/nhwc_block32_engine/block32_conv1_opt.cpp
+    src/nhwc_block32_engine/block32_layer1_opt.cpp
+    src/nhwc_block32_engine/block32_layer234_opt.cpp
+    src/nhwc_block32_engine/block32_residual.cpp
+    src/nhwc_block32_engine/block32_resnet18.cpp
+    src/nhwc_block32_engine/nhwc_common.cpp
+    src/q2q_engine/q2q_common.cpp
+    src/q2q_engine/q2q_tensor.cpp
+    src/q2q_engine/q2q_quant.cpp
+    src/q2q_engine/q2q_pool.cpp
+    src/basic_engine/model_loader.cpp
+    src/basic_engine/ops.cpp
+    src/basic_engine/conv_plan.cpp
+    src/basic_engine/bn_fusion.cpp
+    src/basic_engine/sparse_ocblock_plan.cpp
+    src/basic_engine/pattern_ocblock2_plan.cpp
+    src/basic_engine/pattern_ocblock4_plan.cpp
+    src/basic_engine/conv1_ocblock4_plan.cpp
+)
+target_include_directories(benchmark_block32_full_model_opt5 PRIVATE src/basic_engine src/nhwc_block32_engine src/q2q_engine)
+target_compile_definitions(benchmark_block32_full_model_opt5 PRIVATE NDEBUG)
+target_compile_options(benchmark_block32_full_model_opt5 PRIVATE
+    -O3 -march=x86-64-v3 -Wall -Wextra -Wpedantic)
+
 endif() # BUILD_NHWC_BLOCK32
