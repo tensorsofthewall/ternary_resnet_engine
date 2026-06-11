@@ -1,7 +1,7 @@
 # Engineering Notes: Architecture, Profiling, and Optimization History
 
 This document is the engineering deep-dive that backs the headline results in
-[README.md](README.md) — the kernel-level architecture of both engines, the ONNX Runtime
+[README.md](README.md) — the kernel-level architecture of all three engines, the ONNX Runtime
 profiling that motivated the strategy change, the reasoning that connects profiling
 findings to the investigation that followed, and the full record of what worked and what
 didn't (including negative results with measurements).
@@ -16,9 +16,11 @@ go deeper into *why* the engines are built the way they are. See "What to Look A
 
 ## Architecture Overview
 
-### Tensor layout
+### `basic_engine` tensor layout
 
-The engine uses NCHW tensors:
+This subsection describes the original `basic_engine`. The Q2Q/VNNI and AVX2 block32 engines use NHWC/q8 tensor layouts described in their own sections below.
+
+`basic_engine` uses NCHW tensors:
 
 ```text
 data[(c * h + y) * w + x]
@@ -28,9 +30,9 @@ This layout makes per-output-channel writes contiguous, which is important for t
 OC-block parallel strategy. An attempted output-height tile parallel schedule regressed
 because it scattered output writes across channel planes.
 
-### Ternary weight execution
+### `basic_engine` ternary weight execution
 
-Weights are stored as `int8_t` values in `{-1, 0, +1}`.
+In `basic_engine`, weights are stored as `int8_t` values in `{-1, 0, +1}` and executed directly as ternary sparse/pattern actions.
 
 The engine precomputes sparse plans so inner loops can iterate only over non-zero weight
 positions. For multiple output channels, it groups actions by ternary pattern:
@@ -41,9 +43,9 @@ positions. For multiple output channels, it groups actions by ternary pattern:
 This reduces branching and allows AVX2 kernels to update multiple output channels or
 spatial lanes efficiently.
 
-### q8 activation path
+### `basic_engine` q8 activation path
 
-The q8 kernels dynamically quantize FP32 activations per layer using symmetric int8
+The `basic_engine` q8 kernels dynamically quantize FP32 activations per layer using symmetric int8
 quantization, perform INT32 accumulation, and apply fused BN/output scaling back to FP32.
 
 The current q8 family includes:
@@ -54,9 +56,9 @@ The current q8 family includes:
 - q8 1×1 stride-2 downsample kernel
 - fused quantize+pad helpers with reusable workspace buffers
 
-### Workspace execution
+### `basic_engine` workspace execution
 
-The fast path uses reusable workspace buffers:
+The `basic_engine` fast path uses reusable workspace buffers:
 
 - `buf_x`
 - `buf_a`
@@ -155,8 +157,10 @@ The full module breakdown lives in `src/q2q_engine/`: `q2q_common`, `q2q_tensor`
 `q2q_quant`, `q2q_epilogue`, `q2q_weight_panel`, `q2q_conv_vnni`, `q2q_conv1_vnni`,
 `q2q_pool`, `q2q_residual`, and `q2q_resnet18`, with
 `benchmark_q2q_full_prefix_optimized.cpp` as a thin CLI/harness layer over them — mirroring
-`basic_engine`'s module structure. This design is what lets it beat both `basic_engine`
-and ORT INT8 end-to-end (see "Current Benchmark Results" in README.md).
+`basic_engine`'s module structure. This design is the fastest path in the repo and beats
+both `basic_engine` and ORT INT8 end-to-end (see "Current Benchmark Results" in
+README.md). The AVX2 block32 engine below asks a related but distinct question: how much of
+that win comes from the dense-panel strategy itself rather than from `AVX-VNNI` specifically.
 
 ### AVX2 Block32 Engine (opt5, AVX2-only)
 
@@ -190,13 +194,13 @@ instead of `vpdpbusd`.
 |---|---:|---|
 | opt3 (Phase 14 final) | ~29.19 ms | Specialized per-layer OC4 block32 kernels (`block32_conv_avx2`, `block32_layer1_opt`/`block32_layer234_opt`), gather-based conv1 |
 | opt4 (Phase 15 final) | ~24.01 ms | Replaced the repeated 3x3/s1/p1 convs in layer2/3/4 with **panel-im2col GEMM OC4** kernels (`im2col_gemm.cpp`, `panel_im2col_gemm_oc4_n2_avx2`) — gathers each output pixel's receptive field into a panel once, then runs an OC-tile-major GEMM over it, amortizing the gather cost across all 4 output channels |
-| opt5 (Phase 16 final) | **~19.5-20.0 ms** | Extended panel-im2col GEMM to layer1's 3x3/s1/p1 convs and to the stride-2 transition convs (`panel_im2col_gemm_oc4_stride2_avx2`), and added a panel-GEMM N16 variant for conv1's 7x7/s2 stem (`conv1_panel_gemm_oc4_n16_avx2`) |
+| opt5 (Phase 16 final) | **~19.4-20.0 ms** | Extended panel-im2col GEMM to layer1's 3x3/s1/p1 convs and to the stride-2 transition convs (`panel_im2col_gemm_oc4_stride2_avx2`), and added a panel-GEMM N16 variant for conv1's 7x7/s2 stem (`conv1_panel_gemm_oc4_n16_avx2`) |
 
 Every step preserves **exact q8 correctness** (0/0 mismatches against the scalar
 reference at every stage of every variant) — these are pure kernel-strategy changes, not
 approximations.
 
-opt5's ~19.5-20.0 ms median at 1 thread lands within run-to-run noise of ORT INT8's
+opt5's ~19.4-20.0 ms median at 1 thread lands within run-to-run noise of ORT INT8's
 ~19.6-19.7 ms on this machine (see "Current Benchmark Results" in README.md) — i.e. the
 panel-GEMM strategy alone, without `AVX-VNNI`, already closes essentially the entire gap
 to ORT INT8 that `basic_engine`'s sparse-direct kernels could not. `AVX-VNNI` (Q2Q) is
@@ -284,7 +288,7 @@ Key interpretation:
   fragmentation limit INT8 scaling.
 - ORT's quantized 3×3 convs are still much faster than the custom bucket kernels.
 
-Representative comparison:
+Representative comparison for the tuned `basic_engine` sparse/q8 path before the Q2Q and block32 rewrites:
 
 | Layer type | ORT | Custom engine |
 |---|---:|---:|
@@ -311,7 +315,7 @@ above).
 
 That reframed the problem: the sparse, branch-grouped ternary strategy and ORT's dense
 packed strategy aren't two tunings of the same idea — they're different ideas, and
-closing the gap meant picking one. Three lines of investigation followed directly from
+closing the gap meant picking one. Four lines of investigation followed directly from
 that profiling insight:
 
 1. **Allocation/dispatch cleanup** — heap-allocation profiling
@@ -331,15 +335,22 @@ that profiling insight:
    adopts ORT's own strategy: re-quantize to a dense, regular representation (INT8) and
    run it through the CPU's dedicated dense dot-product instruction (`AVX-VNNI`
    `vpdpbusd`), in a layout (NHWC/q8) that's natural for that instruction (see "Q2Q / VNNI
-   Engine" and "Why Q2Q/VNNI outperforms the sparse engine"). This is the change that
-   produced the final, ORT-beating result.
+   Engine" and "Why Q2Q/VNNI outperforms the sparse engine"). This produced the fastest
+   engine in the repo and beats ORT INT8 decisively on this machine.
+4. **AVX2 block32 validation of the same strategy** — to separate *strategy* from
+   *instruction-set advantage*, the block32 engine repeats the dense NHWC/q8 panel-GEMM
+   design using only AVX2 `maddubs`+`madd` dot products. It does not reach Q2Q/VNNI's
+   latency, but it closes essentially the whole ORT INT8 gap without `AVX-VNNI`, showing
+   that dense panel-GEMM layout was the decisive architectural shift while `vpdpbusd`
+   provides the final speedup.
   
 I also treated `bitnet.cpp` as a strategy reference for low-bit kernel design — primarily the idea that low-bit models benefit from explicit packing/layout and custom kernels — but did not reuse or depend on any of its code.
 
 In short: the first two investigation lines used the profiling feedback to *characterize*
 the ceiling precisely (and are documented in full, including the negative results, because
-that characterization is itself a useful engineering artifact); the third line used that
-characterization to *change strategy* rather than keep tuning against it.
+that characterization is itself a useful engineering artifact); the Q2Q/VNNI and AVX2
+block32 lines used that characterization to *change strategy* rather than keep tuning
+against it.
 
 ---
 
@@ -392,6 +403,40 @@ consistent and greatly reduced allocation noise.
 Changing `BNFusedParams` from value copy to const reference eliminated 40 allocations per
 forward. Fixed-size timing names and final `*_into` ops made the profiled path match the
 fast path.
+
+
+### Dense NHWC/q8 panel strategy
+
+The Q2Q/VNNI and AVX2 block32 engines both switch away from direct sparse ternary
+execution and instead run dense INT8-style dot products over NHWC/q8 activations. This
+regularizes memory access, increases arithmetic intensity, and makes the hot loops look
+like small packed GEMM kernels rather than sparse bucket traversals.
+
+### AVX-VNNI dot-product kernels
+
+In the Q2Q engine, `_mm256_dpbusd_epi32` collapses the unsigned-activation × signed-weight
+INT8 dot product into one dense instruction over 32 lanes. This is the fastest path in the
+repo and is what pushes the dense-panel strategy decisively past ORT INT8.
+
+### AVX2 block32 dot-product kernels
+
+The AVX2 block32 engine implements the same dense-panel strategy without `AVX-VNNI`,
+using `_mm256_maddubs_epi16` followed by `_mm256_madd_epi16`. It is slower than Q2Q/VNNI
+but still roughly matches ORT INT8 at 1 thread, proving that the layout/kernel strategy
+alone closes most of the gap.
+
+### Panel-im2col GEMM for dominant conv shapes
+
+Panel-im2col GEMM was the key AVX2 block32 breakthrough. Instead of revisiting the same
+spatial patch once per output-channel tile, the kernel gathers an output-pixel panel once
+and reuses it across OC tiles. This moved block32 from the opt3/opt4 range into opt5,
+where it roughly matches ORT INT8 without VNNI.
+
+### Vectorized epilogues and fast q8 requantization
+
+Replacing scalar/libm rounding and scalar per-channel epilogues with inline q8 rounding
+and 4-wide OC epilogues removed avoidable per-output overhead across every dense q8
+kernel. This helped both the intermediate block32 kernels and the final panel-GEMM path.
 
 ---
 
@@ -472,7 +517,7 @@ bucket kernel's per-action input loads.
 activation-panel packing on this architecture and layout. Not integrated. Files retained in
 `quantized/` and `benchmark_packed_3x3.cpp` for reference.
 
-### Dense GEMM-style M_TILE=2 ternary kernel
+### Dense GEMM-style M_TILE=2 ternary kernel inside `basic_engine`
 
 **Hypothesis**: a dense traversal of all K positions with M_TILE=2 output channels sharing
 one A_panel load per k would outperform the sparse per-OC index traversal by halving
@@ -504,9 +549,11 @@ Branchless alternatives (`sign_epi32`) were already tested in the OC_TILE=2/4 pa
 sparse experiment and also regressed (0.60×). No branchless ternary encoding exists in
 AVX2 that avoids this cost without a fundamentally different kernel structure.
 
-**Conclusion**: Dense ternary GEMM with per-k weight branching does not work on this
-architecture. The sparse branch-free design is the right approach for ternary weights in
-AVX2. Not integrated. Files retained in `benchmark_gemm3x3.cpp` for reference.
+**Conclusion**: Dense ternary GEMM with per-k weight branching does not work inside the
+`sparse-direct basic_engine` strategy. This negative result does **not** contradict the
+later Q2Q/block32 panel-GEMM wins, because those engines first re-encode weights as dense
+INT8 panels and avoid per-k ternary sign branches entirely. Not integrated. Files retained
+in `benchmark_gemm3x3.cpp` for reference.
 
 ---
 
